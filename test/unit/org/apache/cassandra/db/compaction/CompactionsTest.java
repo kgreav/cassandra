@@ -22,8 +22,10 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.*;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
-
+import java.util.concurrent.CancellationException;
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
@@ -42,6 +44,10 @@ import org.apache.cassandra.io.sstable.format.SSTableReader;
 import org.apache.cassandra.io.sstable.format.SSTableWriter;
 import org.apache.cassandra.io.sstable.metadata.StatsMetadata;
 import org.apache.cassandra.locator.SimpleStrategy;
+import org.apache.cassandra.metrics.CompactionMetrics;
+import org.apache.cassandra.repair.RepairJobDesc;
+import org.apache.cassandra.repair.Validator;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
@@ -64,6 +70,7 @@ public class CompactionsTest
     private static final String CF_STANDARD2 = "Standard2";
     private static final String CF_STANDARD3 = "Standard3";
     private static final String CF_STANDARD4 = "Standard4";
+    private static final String CF_STANDARD5 = "Standard5";
     private static final String CF_SUPER1 = "Super1";
     private static final String CF_SUPER5 = "Super5";
     private static final String CF_SUPERGC = "SuperDirectGC";
@@ -81,6 +88,7 @@ public class CompactionsTest
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD2),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD3),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD4),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD5),
                                     SchemaLoader.superCFMD(KEYSPACE1, CF_SUPER1, LongType.instance),
                                     SchemaLoader.superCFMD(KEYSPACE1, CF_SUPER5, BytesType.instance),
                                     SchemaLoader.superCFMD(KEYSPACE1, CF_SUPERGC, BytesType.instance).gcGraceSeconds(0));
@@ -383,11 +391,86 @@ public class CompactionsTest
         assertEquals( prevGeneration + 1, sstables.iterator().next().descriptor.generation);
     }
 
+    @Test(expected = CompactionInterruptedException.class)
+    public void testInterruptCompactionFor() throws Throwable
+    {
+        Keyspace keyspace = Keyspace.open(KEYSPACE1);
+        final String cfname = CF_STANDARD5;
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(cfname);
+
+        cfs.truncateBlocking(false);
+        // disable compaction while flushing
+        cfs.disableAutoCompaction();
+
+        populate(KEYSPACE1, CF_STANDARD5, 0, 9, 3); //ttl=3s
+        cfs.forceBlockingFlush();
+        populate(KEYSPACE1, CF_STANDARD5, 10, 19, 3); //ttl=3s
+        cfs.forceBlockingFlush();
+        populate(KEYSPACE1, CF_STANDARD5, 20, 29, 3); //ttl=3s
+        cfs.forceBlockingFlush();
+        populate(KEYSPACE1, CF_STANDARD5, 30, 39, 3); //ttl=3s
+        cfs.forceBlockingFlush();
+
+        assertEquals(4, cfs.getSSTables().size());
+
+        // wait enough to force single compaction
+        TimeUnit.SECONDS.sleep(5);
+
+        // kick off a validation we can interrupt
+        Range<Token> range = new Range<>(Util.token(""), Util.token(""));
+        int gcBefore = keyspace.getColumnFamilyStore(cfname).gcBefore(System.currentTimeMillis());
+        UUID parentRepSession = UUID.randomUUID();
+        ActiveRepairService.instance.registerParentRepairSession(parentRepSession, FBUtilities.getBroadcastAddress(), Arrays.asList(cfs), Arrays.asList(range), false, true);
+        RepairJobDesc desc = new RepairJobDesc(parentRepSession, UUID.randomUUID(), KEYSPACE1, cfname, range);
+        Validator validator = new Validator(desc, FBUtilities.getBroadcastAddress(), gcBefore);
+
+        List<OperationType> interrupt = new ArrayList<>();
+        interrupt.add(OperationType.VALIDATION);
+
+        // submit a normal compaction to ensure it doesn't get interrupted
+        cfs.enableAutoCompaction();
+        List<Future<?>> compactions = CompactionManager.instance.submitBackground(cfs);
+        assertTrue(compactions.size() == 1);
+        Future<?> compaction = compactions.get(0);
+
+        while (!compaction.isDone() && !(CompactionManager.instance.getActiveCompactions() > 0))
+        {
+            Thread.sleep(10);
+        }
+
+        try
+        {
+            // should not throw exception as we didn't interrupt.
+            compaction.get();
+        }
+        catch (Exception ex)
+        {
+            fail("Compaction was interrupted when it should not have been");
+        }
+
+        Future<?> validation = CompactionManager.instance.submitValidation(cfs, validator);
+
+        while (!validation.isDone() && !(CompactionManager.instance.getActiveCompactions() > 0))
+        {
+            Thread.sleep(10);
+        }
+
+        CompactionManager.instance.interruptCompactionFor(new ArrayList<CFMetaData>(Collections.singletonList(cfs.metadata)), interrupt);
+
+        try
+        {
+            validation.get();
+        } catch (ExecutionException e)
+        {
+            throw (CompactionInterruptedException) e.getCause();
+        }
+    }
+
     @Test
     public void testRangeTombstones()
     {
         Keyspace keyspace = Keyspace.open(KEYSPACE1);
-        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore("Standard2");
+        ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(CF_STANDARD2);
         cfs.clearUnsafe();
 
         // disable compaction while flushing

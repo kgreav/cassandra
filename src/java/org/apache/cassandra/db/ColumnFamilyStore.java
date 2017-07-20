@@ -41,6 +41,7 @@ import org.apache.cassandra.db.lifecycle.View;
 import org.apache.cassandra.db.lifecycle.Tracker;
 import org.apache.cassandra.db.lifecycle.LifecycleTransaction;
 import org.apache.cassandra.io.FSWriteError;
+import org.apache.cassandra.metrics.CompactionMetrics;
 import org.json.simple.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -2850,7 +2851,12 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         logger.trace("truncate complete");
     }
 
-    public <V> V runWithCompactionsDisabled(Callable<V> callable, boolean interruptValidation)
+    /**
+     * Execute task with auto compactions disabled
+     * @param callable Task to run after stopping/disabling compactions
+     * @param interruptibles In-progress {@link org.apache.cassandra.db.compaction.OperationType}'s to stop.
+     */
+    public <V> V runWithCompactionsDisabled(Callable<V> callable, Collection<OperationType> interruptibles)
     {
         // synchronize so that concurrent invocations don't re-enable compactions partway through unexpectedly,
         // and so we only run one major compaction at a time
@@ -2863,17 +2869,27 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
                 cfs.getCompactionStrategy().pause();
             try
             {
-                // interrupt in-progress compactions
-                CompactionManager.instance.interruptCompactionForCFs(selfWithIndexes, interruptValidation);
+                CompactionManager.instance.interruptCompactionFor(metadataWithIndexes(), interruptibles);
                 CompactionManager.instance.waitForCessation(selfWithIndexes);
 
-                // doublecheck that we finished, instead of timing out
-                for (ColumnFamilyStore cfs : selfWithIndexes)
+                // doublecheck that we stopped compactions
+                for (CompactionInfo.Holder compactionHolder : CompactionMetrics.getCompactions())
                 {
-                    if (!cfs.getTracker().getCompacting().isEmpty())
+                    CompactionInfo info = compactionHolder.getCompactionInfo();
+                    // Only check for compactions that we should have interrupted
+                    if (interruptibles.contains(info.getTaskType()))
                     {
-                        logger.warn("Unable to cancel in-progress compactions for {}.  Perhaps there is an unusually large row in progress somewhere, or the system is simply overloaded.", metadata.cfName);
-                        return null;
+                        for (ColumnFamilyStore cfs : selfWithIndexes)
+                        {
+                            ColumnFamilyStore compactingCfs = ColumnFamilyStore.getIfExists(info.getCFMetaData().cfId);
+                            if (cfs.equals(compactingCfs))
+                            {
+                                logger.warn("Unable to cancel in-progress compactions for {}." +
+                                            " Perhaps there is an unusually large row in progress somewhere," +
+                                            " or the system is simply overloaded.", metadata.cfName);
+                                return null;
+                            }
+                        }
                     }
                 }
                 logger.trace("Compactions successfully cancelled");
@@ -2896,14 +2912,35 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         }
     }
 
-    public LifecycleTransaction markAllCompacting(final OperationType operationType)
+    public <V> V runWithCompactionsDisabled(Callable<V> callable, boolean interruptValidation)
+    {
+        if (interruptValidation)
+        {
+            return runWithCompactionsDisabled(callable, Sets.newHashSet(OperationType.values()));
+        }
+        else
+        {
+            Set<OperationType> interruptible = Sets.newHashSet(OperationType.values());
+            interruptible.remove(OperationType.VALIDATION);
+            return runWithCompactionsDisabled(callable, interruptible);
+        }
+    }
+
+    /**
+     * Marks all currently uncompacting SSTables as compacting. To mark all SSTables ensure you interrupt all running
+     * operations prior to calling.
+     * @param operationType {@link org.apache.cassandra.db.compaction.OperationType} to mark as compacting with
+     * @param interruptibles List of {@link org.apache.cassandra.db.compaction.OperationType} that should be stopped
+     *                       prior to marking.
+     * @return Transaction over uncompacting SSTables
+     */
+    public LifecycleTransaction markAllCompacting(final OperationType operationType, List<OperationType> interruptibles)
     {
         Callable<LifecycleTransaction> callable = new Callable<LifecycleTransaction>()
         {
             public LifecycleTransaction call() throws Exception
             {
-                assert data.getCompacting().isEmpty() : data.getCompacting();
-                Iterable<SSTableReader> sstables = getPermittedToCompactSSTables();
+                Iterable<SSTableReader> sstables = getUncompactingSSTables();
                 sstables = AbstractCompactionStrategy.filterSuspectSSTables(sstables);
                 sstables = ImmutableList.copyOf(sstables);
                 LifecycleTransaction modifier = data.tryModify(sstables, operationType);
@@ -2912,9 +2949,13 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
             }
         };
 
-        return runWithCompactionsDisabled(callable, false);
+        return runWithCompactionsDisabled(callable, interruptibles);
     }
 
+    public LifecycleTransaction markAllCompacting(final OperationType operationType)
+    {
+        return markAllCompacting(operationType, operationType.getInterruptibles());
+    }
 
     @Override
     public String toString()
@@ -3045,6 +3086,18 @@ public class ColumnFamilyStore implements ColumnFamilyStoreMBean
         // we return the main CFS first, which we rely on for simplicity in switchMemtable(), for getting the
         // latest replay position
         return Iterables.concat(Collections.singleton(this), indexManager.getIndexesBackedByCfs());
+    }
+
+    /**
+     * @return {@link org.apache.cassandra.config.CFMetaData}'s for this CFS and all its indexes
+     */
+    public Iterable<CFMetaData> metadataWithIndexes()
+    {
+        ArrayList<CFMetaData> metadatas = new ArrayList<>();
+        metadatas.add(metadata);
+        for (ColumnFamilyStore cfs : indexManager.getIndexesBackedByCfs())
+            metadatas.add(cfs.metadata);
+        return metadatas;
     }
 
     public List<String> getBuiltIndexes()

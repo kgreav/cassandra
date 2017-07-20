@@ -275,10 +275,10 @@ public class CompactionManager implements CompactionManagerMBean
      * @throws InterruptedException
      */
     @SuppressWarnings("resource")
-    private AllSSTableOpStatus parallelAllSSTableOperation(final ColumnFamilyStore cfs, final OneSSTableOperation operation, int jobs, OperationType operationType) throws ExecutionException, InterruptedException
+    private AllSSTableOpStatus parallelAllSSTableOperation(final ColumnFamilyStore cfs, final OneSSTableOperation operation, int jobs, OperationType operationType, List<OperationType> interruptibles) throws ExecutionException, InterruptedException
     {
         List<LifecycleTransaction> transactions = new ArrayList<>();
-        try (LifecycleTransaction compacting = cfs.markAllCompacting(operationType))
+        try (LifecycleTransaction compacting = cfs.markAllCompacting(operationType, interruptibles))
         {
             Iterable<SSTableReader> sstables = compacting != null ? Lists.newArrayList(operation.filterSSTables(compacting)) : Collections.<SSTableReader>emptyList();
             if (Iterables.isEmpty(sstables))
@@ -324,6 +324,11 @@ public class CompactionManager implements CompactionManagerMBean
             if (fail != null)
                 logger.error("Failed to cleanup lifecycle transactions {}", fail);
         }
+    }
+
+    private AllSSTableOpStatus parallelAllSSTableOperation(final ColumnFamilyStore cfs, final OneSSTableOperation operation, int jobs, OperationType operationType) throws ExecutionException, InterruptedException
+    {
+        return parallelAllSSTableOperation(cfs, operation, jobs, operationType, operationType.getInterruptibles());
     }
 
     private static interface OneSSTableOperation
@@ -381,6 +386,12 @@ public class CompactionManager implements CompactionManagerMBean
 
     public AllSSTableOpStatus performSSTableRewrite(final ColumnFamilyStore cfs, final boolean excludeCurrentVersion, int jobs) throws InterruptedException, ExecutionException
     {
+        List<OperationType> interruptibles;
+        if (excludeCurrentVersion)
+            interruptibles = OperationType.UPGRADE_SSTABLES.getInterruptibles();
+        else
+            interruptibles = Arrays.asList(OperationType.values());
+
         return parallelAllSSTableOperation(cfs, new OneSSTableOperation()
         {
             @Override
@@ -408,7 +419,7 @@ public class CompactionManager implements CompactionManagerMBean
                 task.setCompactionType(OperationType.UPGRADE_SSTABLES);
                 task.execute(metrics);
             }
-        }, jobs, OperationType.UPGRADE_SSTABLES);
+        }, jobs, OperationType.UPGRADE_SSTABLES, interruptibles);
     }
 
     public AllSSTableOpStatus performCleanup(final ColumnFamilyStore cfStore, int jobs) throws InterruptedException, ExecutionException
@@ -1722,10 +1733,10 @@ public class CompactionManager implements CompactionManagerMBean
      * isCompacting if you want that behavior.
      *
      * @param columnFamilies The ColumnFamilies to try to stop compaction upon.
-     * @param interruptValidation true if validation operations for repair should also be interrupted
+     * @param interruptibles {@link org.apache.cassandra.db.compaction.OperationType}'s that should be interrupted
      *
      */
-    public void interruptCompactionFor(Iterable<CFMetaData> columnFamilies, boolean interruptValidation)
+    public void interruptCompactionFor(Iterable<CFMetaData> columnFamilies, Collection<OperationType> interruptibles)
     {
         assert columnFamilies != null;
 
@@ -1733,11 +1744,29 @@ public class CompactionManager implements CompactionManagerMBean
         for (Holder compactionHolder : CompactionMetrics.getCompactions())
         {
             CompactionInfo info = compactionHolder.getCompactionInfo();
-            if ((info.getTaskType() == OperationType.VALIDATION) && !interruptValidation)
-                continue;
+            if ((interruptibles.contains(info.getTaskType())))
+            {
+                if (Iterables.contains(columnFamilies, info.getCFMetaData()))
+                    compactionHolder.stop();
+            }
+        }
+    }
 
-            if (Iterables.contains(columnFamilies, info.getCFMetaData()))
-                compactionHolder.stop(); // signal compaction to stop
+    /**
+     * See {@link org.apache.cassandra.db.compaction.CompactionManager#interruptCompactionFor(Iterable, Collection)}
+     * @param interruptValidation true if validation operations for repair should also be interrupted
+     */
+    public void interruptCompactionFor(Iterable<CFMetaData> columnFamilies, boolean interruptValidation)
+    {
+        if (interruptValidation)
+        {
+            interruptCompactionFor(columnFamilies, Sets.newHashSet(OperationType.values()));
+        }
+        else
+        {
+            HashSet<OperationType> interruptibles =  Sets.newHashSet(OperationType.values());
+            interruptibles.remove(OperationType.VALIDATION);
+            interruptCompactionFor(columnFamilies, interruptibles);
         }
     }
 
@@ -1750,6 +1779,10 @@ public class CompactionManager implements CompactionManagerMBean
         interruptCompactionFor(metadata, interruptValidation);
     }
 
+    /**
+     * Wait up to a minute for compactions to stop
+     * @param cfss Columnfamilies to check and wait for compactions
+     */
     public void waitForCessation(Iterable<ColumnFamilyStore> cfss)
     {
         long start = System.nanoTime();
@@ -1757,7 +1790,7 @@ public class CompactionManager implements CompactionManagerMBean
         while (System.nanoTime() - start < delay)
         {
             if (CompactionManager.instance.isCompacting(cfss))
-                Uninterruptibles.sleepUninterruptibly(1, TimeUnit.MILLISECONDS);
+                Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
             else
                 break;
         }
