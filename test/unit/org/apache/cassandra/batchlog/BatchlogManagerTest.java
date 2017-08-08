@@ -67,6 +67,8 @@ public class BatchlogManagerTest
     private static final String CF_STANDARD3 = "Standard3";
     private static final String CF_STANDARD4 = "Standard4";
     private static final String CF_STANDARD5 = "Standard5";
+    private static final String CF_STANDARD6 = "Standard6";
+
 
     static PartitionerSwitcher sw;
 
@@ -82,7 +84,8 @@ public class BatchlogManagerTest
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD2, 1, BytesType.instance),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD3, 1, BytesType.instance),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD4, 1, BytesType.instance),
-                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD5, 1, BytesType.instance));
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD5, 1, BytesType.instance),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD6, 1, BytesType.instance));
     }
 
     @AfterClass
@@ -222,6 +225,26 @@ public class BatchlogManagerTest
         assertNotNull(result);
         assertEquals(500, result.one().getLong("count"));
     }
+
+    @Test
+    public void testReplayLargeBatch()
+    {
+        CFMetaData cfm = Keyspace.open(KEYSPACE1).getColumnFamilyStore(CF_STANDARD6).metadata;
+        // generate enough mutations to use more than max value size
+        List<Mutation> mutations = new ArrayList<>(50 * 1024);
+        for (int j = 0; j < 50 * 1024; j++)
+        {
+            mutations.add(new RowUpdateBuilder(cfm, FBUtilities.timestampMicros(), ByteBufferUtil.bytes(1))
+                          .clustering("name" + j)
+                          .add("val", "val" + j)
+                          .build());
+        }
+
+        long timestamp = System.currentTimeMillis() - BatchlogManager.getBatchlogTimeout();
+
+        BatchlogManager.store(Batch.createLocal(UUIDGen.getTimeUUID(timestamp), timestamp * 1000, mutations));
+    }
+
 
     @Test
     public void testTruncatedReplay() throws InterruptedException, ExecutionException

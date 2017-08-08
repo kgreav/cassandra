@@ -40,6 +40,8 @@ import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.db.marshal.UUIDType;
 import org.apache.cassandra.db.partitions.PartitionUpdate;
+import org.apache.cassandra.db.SimpleBuilders.PartitionUpdateBuilder;
+import org.apache.cassandra.db.SimpleBuilders.RowBuilder;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.WriteFailureException;
 import org.apache.cassandra.exceptions.WriteTimeoutException;
@@ -54,6 +56,7 @@ import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.service.WriteResponseHandler;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.SystemTimeSource;
 import org.apache.cassandra.utils.UUIDGen;
 
 import static com.google.common.collect.Iterables.transform;
@@ -66,6 +69,8 @@ public class BatchlogManager implements BatchlogManagerMBean
     private static final long REPLAY_INTERVAL = 10 * 1000; // milliseconds
     static final int DEFAULT_PAGE_SIZE = 128;
 
+    // Batch must be written in this time
+    static final int INACTIVE_BATCH_FAIL_TIMEOUT = 1000 * 60 * 10; // 10 minutes in ms
     private static final Logger logger = LoggerFactory.getLogger(BatchlogManager.class);
     public static final BatchlogManager instance = new BatchlogManager();
 
@@ -120,17 +125,37 @@ public class BatchlogManager implements BatchlogManagerMBean
         store(batch, true);
     }
 
+    /**
+     * Stores given batch in batchlog table in a single partition.
+     * @param batch Batch to store
+     * @param durableWrites Write batchlog update to commitlog as well as table.
+     */
     public static void store(Batch batch, boolean durableWrites)
     {
-        List<ByteBuffer> mutations = new ArrayList<>(batch.encodedMutations.size() + batch.decodedMutations.size());
-        mutations.addAll(batch.encodedMutations);
+        // We store active first so that if this batch gets replayed while still being written
+        // we can rely on active to avoid replaying.
+        PartitionUpdateBuilder builder = new PartitionUpdateBuilder(SystemKeyspace.Batches, batch.id);
+        builder.row(Clustering.STATIC_CLUSTERING)
+               .add("version", MessagingService.current_version)
+               .add("active", false);
+        builder.buildAsMutation().apply(durableWrites);
+
+        long index = 0;
+        for (ByteBuffer mutation : batch.encodedMutations)
+        {
+            builder = new PartitionUpdateBuilder(SystemKeyspace.Batches, batch.id);
+            builder.row(index++).add("mutation", mutation);
+            builder.buildAsMutation().apply(durableWrites);
+        }
 
         for (Mutation mutation : batch.decodedMutations)
         {
             try (DataOutputBuffer buffer = new DataOutputBuffer())
             {
                 Mutation.serializer.serialize(mutation, buffer, MessagingService.current_version);
-                mutations.add(buffer.buffer());
+                builder = new PartitionUpdateBuilder(SystemKeyspace.Batches, batch.id);
+                builder.row(index++).add("mutation", buffer.buffer());
+                builder.buildAsMutation().apply(durableWrites);
             }
             catch (IOException e)
             {
@@ -139,13 +164,11 @@ public class BatchlogManager implements BatchlogManagerMBean
             }
         }
 
-        PartitionUpdate.SimpleBuilder builder = PartitionUpdate.simpleBuilder(SystemKeyspace.Batches, batch.id);
-        builder.row()
-               .timestamp(batch.creationTime)
-               .add("version", MessagingService.current_version)
-               .appendAll("mutations", mutations);
-
+        builder = new PartitionUpdateBuilder(SystemKeyspace.Batches, batch.id);
+        builder.row(Clustering.STATIC_CLUSTERING)
+               .add("active", true);
         builder.buildAsMutation().apply(durableWrites);
+
     }
 
     @VisibleForTesting
@@ -196,19 +219,25 @@ public class BatchlogManager implements BatchlogManagerMBean
         int throttleInKB = DatabaseDescriptor.getBatchlogReplayThrottleInKB() / endpointsCount;
         RateLimiter rateLimiter = RateLimiter.create(throttleInKB == 0 ? Double.MAX_VALUE : throttleInKB * 1024);
 
-        UUID limitUuid = UUIDGen.maxTimeUUID(System.currentTimeMillis() - getBatchlogTimeout());
+        UUID limitUuid = UUIDGen.maxTimeUUID(System.currentTimeMillis() - getBatchlogTimeout()); // TODO: the batchlog timeout is now dependant on how many mutations you have. Is this a problem?
         ColumnFamilyStore store = Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(SystemKeyspace.BATCHES);
         int pageSize = calculatePageSize(store);
         // There cannot be any live content where token(id) <= token(lastReplayedUuid) as every processed batch is
         // deleted, but the tombstoned content may still be present in the tables. To avoid walking over it we specify
         // token(id) > token(lastReplayedUuid) as part of the query.
-        String query = String.format("SELECT id, mutations, version FROM %s.%s WHERE token(id) > token(?) AND token(id) <= token(?)",
+
+        String query = String.format("SELECT id, mutations, version, active FROM %s.%s" +
+                                     "WHERE token(id) > token(?) AND token(id) <= token(?)",
                                      SchemaConstants.SYSTEM_KEYSPACE_NAME,
                                      SystemKeyspace.BATCHES);
+//        String query = String.format("SELECT id, mutations, version FROM %s.%s WHERE token(id) > token(?) AND token(id) <= token(?)",
+//                                     SchemaConstants.SYSTEM_KEYSPACE_NAME,
+//                                     SystemKeyspace.BATCHES);
         UntypedResultSet batches = executeInternalWithPaging(query, pageSize, lastReplayedUuid, limitUuid);
         processBatchlogEntries(batches, pageSize, rateLimiter);
         lastReplayedUuid = limitUuid;
         logger.trace("Finished replayFailedBatches");
+        return;
     }
 
     // read less rows (batches) per page if they are very large
@@ -224,16 +253,44 @@ public class BatchlogManager implements BatchlogManagerMBean
     private void processBatchlogEntries(UntypedResultSet batches, int pageSize, RateLimiter rateLimiter)
     {
         int positionInPage = 0;
-        ArrayList<ReplayingBatch> unfinishedBatches = new ArrayList<>(pageSize);
-
+//        ArrayList<ReplayingBatch> unfinishedBatches = new ArrayList<>(pageSize);
+        Map<UUID, List<ReplayingBatch>> unfinishedBatches = new HashMap<>(pageSize);
         Set<InetAddress> hintedNodes = new HashSet<>();
         Set<UUID> replayedBatches = new HashSet<>();
+
+        List<ByteBuffer> mutations = new ArrayList<>(pageSize);
+        UUID currentBatch, lastBatch = null;
 
         // Sending out batches for replay without waiting for them, so that one stuck batch doesn't affect others
         for (UntypedResultSet.Row row : batches)
         {
-            UUID id = row.getUUID("id");
+            if (!row.getBoolean("active")){
+                // If the first row isn't active yet we check if it was written longer than 30 minutes ago,
+                if (row.getTimestamp("active").before(new Date(System.currentTimeMillis() - INACTIVE_BATCH_FAIL_TIMEOUT))) // TODO: see above re timeout... may need to make this a config property
+                {
+                    // Delete this partition, No point reading in the rest of the batch, so should set lastReplayedUuid to this and finish here,
+                    // let next replay skip this partition.
+                }
+                return;
+            }
+
+            // Need to ensure we replay an entire partition. Active could change during reading,
+            // so read full partition and then check if active.
+            currentBatch = row.getUUID("id");
+            if (lastBatch != null)
+            {
+                // Need to process an entire batch at once, so once the ID changes we need to process the previous batch.
+                if (!lastBatch.equals(currentBatch))
+                {
+
+                }
+            }
+            lastBatch = currentBatch;
             int version = row.getInt("version");
+            boolean active = row.getBoolean("active");
+            // We can
+
+            mutations.add(row.getBytes("mutation"));
             try
             {
                 ReplayingBatch batch = new ReplayingBatch(id, version, row.getList("mutations", BytesType.instance));

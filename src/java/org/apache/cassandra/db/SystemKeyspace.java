@@ -113,14 +113,22 @@ public final class SystemKeyspace
     @Deprecated public static final String LEGACY_FUNCTIONS = "schema_functions";
     @Deprecated public static final String LEGACY_AGGREGATES = "schema_aggregates";
 
+    /**
+     * Batches are stored as wide partitions. Each mutation in a batch is stored in a single PK.
+     * To rebuild a batch the whole partition must be read.
+     * Partitions should not be read before active is marked true.
+     * Version stores {@link org.apache.cassandra.net.MessagingService#current_version}
+     */
     public static final CFMetaData Batches =
         compile(BATCHES,
                 "batches awaiting replay",
                 "CREATE TABLE %s ("
                 + "id timeuuid,"
-                + "mutations list<blob>,"
-                + "version int,"
-                + "PRIMARY KEY ((id)))")
+                + "idx bigint,"
+                + "mutation blob,"
+                + "version int static,"
+                + "active boolean static,"
+                + "PRIMARY KEY ((id), idx))")
                 .copy(new LocalPartitioner(TimeUUIDType.instance))
                 .compaction(CompactionParams.scts(singletonMap("min_threshold", "2")))
                 .gcGraceSeconds(0);
