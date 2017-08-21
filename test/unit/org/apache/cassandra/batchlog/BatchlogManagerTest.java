@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.util.*;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 import com.google.common.collect.Lists;
 
@@ -29,6 +30,8 @@ import org.junit.*;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.Util;
 import org.apache.cassandra.Util.PartitionerSwitcher;
+import org.apache.cassandra.db.marshal.TimeUUIDType;
+import org.apache.cassandra.net.MessagingService;
 import org.apache.cassandra.schema.TableMetadata;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.schema.Schema;
@@ -65,7 +68,9 @@ public class BatchlogManagerTest
     private static final String CF_STANDARD3 = "Standard3";
     private static final String CF_STANDARD4 = "Standard4";
     private static final String CF_STANDARD5 = "Standard5";
-
+    private static final String CF_STANDARD6 = "Standard6";
+    private static final String CF_STANDARD7 = "Standard7";
+    private static final String CF_STANDARD8 = "Standard8";
     static PartitionerSwitcher sw;
 
     @BeforeClass
@@ -80,7 +85,10 @@ public class BatchlogManagerTest
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD2, 1, BytesType.instance),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD3, 1, BytesType.instance),
                                     SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD4, 1, BytesType.instance),
-                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD5, 1, BytesType.instance));
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD5, 1, BytesType.instance),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD6, 1, BytesType.instance),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD7, 1, BytesType.instance),
+                                    SchemaLoader.standardCFMD(KEYSPACE1, CF_STANDARD8, 1, BytesType.instance));
     }
 
     @AfterClass
@@ -98,6 +106,7 @@ public class BatchlogManagerTest
         metadata.updateNormalToken(Util.token("A"), localhost);
         metadata.updateHostId(UUIDGen.getTimeUUID(), localhost);
         Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(SystemKeyspace.BATCHES).truncateBlocking();
+        Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(SystemKeyspace.LEGACY_BATCHLOG_V2).truncateBlocking();
     }
 
     @Test
@@ -126,8 +135,20 @@ public class BatchlogManagerTest
     }
 
     @Test
-    @SuppressWarnings("deprecation")
     public void testReplay() throws Exception
+    {
+        testReplay(false);
+    }
+
+// TODO: fix & enable
+//    @Test
+    public void testLegacyReplay() throws Exception
+    {
+        testReplay(true);
+    }
+
+    @SuppressWarnings("deprecation")
+    private static void testReplay(boolean legacy) throws Exception
     {
         long initialAllBatches = BatchlogManager.instance.countAllBatches();
         long initialReplayedBatches = BatchlogManager.instance.getTotalBatchesReplayed();
@@ -151,21 +172,30 @@ public class BatchlogManagerTest
                            ? (System.currentTimeMillis() - BatchlogManager.getBatchlogTimeout())
                            : (System.currentTimeMillis() + BatchlogManager.getBatchlogTimeout());
 
-            BatchlogManager.store(Batch.createLocal(UUIDGen.getTimeUUID(timestamp, i), timestamp * 1000, mutations));
+            if (legacy)
+                LegacyBatchlogMigrator.store(Batch.createLocal(UUIDGen.getTimeUUID(timestamp, i), timestamp * 1000, mutations), MessagingService.current_version);
+            else
+                BatchlogManager.store(Batch.createLocal(UUIDGen.getTimeUUID(timestamp, i), timestamp * 1000, mutations));
+        }
+
+        if (legacy)
+        {
+            Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(SystemKeyspace.LEGACY_BATCHLOG_V2).forceBlockingFlush();
+            LegacyBatchlogMigrator.migrate();
         }
 
         // Flush the batchlog to disk (see CASSANDRA-6822).
         Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(SystemKeyspace.BATCHES).forceBlockingFlush();
 
-        assertEquals(100, BatchlogManager.instance.countAllBatches() - initialAllBatches);
-        assertEquals(0, BatchlogManager.instance.getTotalBatchesReplayed() - initialReplayedBatches);
+        assertEquals(100L, BatchlogManager.instance.countAllBatches() - initialAllBatches);
+        assertEquals(0L, BatchlogManager.instance.getTotalBatchesReplayed() - initialReplayedBatches);
 
         // Force batchlog replay and wait for it to complete.
         BatchlogManager.instance.startBatchlogReplay().get();
 
         // Ensure that the first half, and only the first half, got replayed.
-        assertEquals(50, BatchlogManager.instance.countAllBatches() - initialAllBatches);
-        assertEquals(50, BatchlogManager.instance.getTotalBatchesReplayed() - initialReplayedBatches);
+        assertEquals(50L, BatchlogManager.instance.countAllBatches() - initialAllBatches);
+        assertEquals(50L, BatchlogManager.instance.getTotalBatchesReplayed() - initialReplayedBatches);
 
         for (int i = 0; i < 100; i++)
         {
@@ -197,7 +227,120 @@ public class BatchlogManagerTest
         // Ensure that no stray mutations got somehow applied.
         UntypedResultSet result = executeInternal(String.format("SELECT count(*) FROM \"%s\".\"%s\"", KEYSPACE1, CF_STANDARD1));
         assertNotNull(result);
-        assertEquals(500, result.one().getLong("count"));
+        assertEquals(500L, result.one().getLong("count"));
+    }
+
+    @Test
+    public void testReplayLargeBatch() throws ExecutionException, InterruptedException
+    {
+        long initialAllBatches = BatchlogManager.instance.countAllBatches();
+
+        TableMetadata cfm = Schema.instance.getTableMetadata(KEYSPACE1, CF_STANDARD6);
+        // generate enough mutations to use more than max value size (should be 2.5MB in yaml)
+        List<Mutation> mutations = new ArrayList<>(50 * 1024);
+        for (int j = 0; j < 50 * 1024; j++)
+        {
+            mutations.add(new RowUpdateBuilder(cfm, FBUtilities.timestampMicros(), ByteBufferUtil.bytes(1))
+                          .clustering("name" + j)
+                          .add("val", "val" + j)
+                          .build());
+        }
+
+        long timestamp = System.currentTimeMillis() - BatchlogManager.getBatchlogTimeout();
+
+        UUID id = UUIDGen.getTimeUUID(timestamp);
+        BatchlogManager.store(Batch.createLocal(id, timestamp * 1000, mutations));
+
+        Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(SystemKeyspace.BATCHES).forceBlockingFlush();
+
+        assertEquals(1L, BatchlogManager.instance.countAllBatches() - initialAllBatches);
+        UntypedResultSet result = executeInternal(String.format("SELECT count(*) FROM \"%s\".\"%s\"", SchemaConstants.SYSTEM_KEYSPACE_NAME, SystemKeyspace.BATCHES));
+        assertEquals(50 * 1024, result.one().getLong("count"));
+        BatchlogManager.instance.startBatchlogReplay().get();
+        result = executeInternal(String.format("SELECT count(*) FROM \"%s\".\"%s\"", KEYSPACE1, CF_STANDARD6));
+        assertNotNull(result);
+        assertEquals(0, BatchlogManager.instance.countAllBatches());
+        assertEquals(50 * 1024L, result.one().getLong("count"));
+
+    }
+
+    @Test
+    public void testBatchExpiry() throws ExecutionException, InterruptedException
+    {
+        long initialAllBatches = BatchlogManager.instance.countAllBatches();
+        long initialBatchesReplayed = BatchlogManager.instance.getTotalBatchesReplayed();
+
+        TableMetadata cfm = Schema.instance.getTableMetadata(KEYSPACE1, CF_STANDARD6);
+        long timestamp = System.currentTimeMillis() - BatchlogManager.MAX_BATCH_AGE - 1000;
+        Mutation mutation = new RowUpdateBuilder(cfm, FBUtilities.timestampMicros(), ByteBufferUtil.bytes(1))
+                                                  .clustering("name")
+                                                  .add("val", "val")
+                                                  .build();
+        UUID id = UUIDGen.getTimeUUID(timestamp);
+        BatchlogManager.store(Batch.createLocal(id, timestamp * 1000, Collections.singletonList(mutation)));
+        Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(SystemKeyspace.BATCHES).forceBlockingFlush();
+        assertEquals(1L, BatchlogManager.instance.countAllBatches() - initialAllBatches);
+        BatchlogManager.instance.startBatchlogReplay().get();
+        // Batch should have expired prior to being replayed
+        assertEquals(0, BatchlogManager.instance.countAllBatches());
+        assertEquals(0, BatchlogManager.instance.getTotalBatchesReplayed() - initialBatchesReplayed);
+    }
+
+    @Test
+    public void testMarkBatchesActive() throws ExecutionException, InterruptedException
+    {
+        long initialBatchesReplayed = BatchlogManager.instance.getTotalBatchesReplayed();
+        // sleep for the timeout as we may have truncated system.batches prior to running this test, and we don't
+        // want to try store a batch that was written before the truncation.
+        TimeUnit.MILLISECONDS.sleep(BatchlogManager.getBatchlogTimeout());
+        TableMetadata cfm = Schema.instance.getTableMetadata(KEYSPACE1, CF_STANDARD7);
+        List<UUID> ids = new ArrayList<>(10);
+        for (int i = 0; i < 10; ++i)
+        {
+            Mutation mutation = new RowUpdateBuilder(cfm, FBUtilities.timestampMicros(), ByteBufferUtil.bytes(i))
+                                .clustering("test" + i)
+                                .add("val", "value"+i)
+                                .build();
+
+            long timestamp = System.currentTimeMillis() - BatchlogManager.getBatchlogTimeout();
+
+            UUID id = UUIDGen.getTimeUUID(timestamp);
+            ids.add(id);
+
+            BatchlogManager.store(Batch.createLocal(id, timestamp * 1000, Collections.singletonList(mutation)),
+                                  true,
+                                  false);
+        }
+        BatchlogManager.instance.startBatchlogReplay().get();
+        assertEquals(10L, BatchlogManager.instance.countAllBatches());
+        assertEquals(0L, BatchlogManager.instance.getTotalBatchesReplayed() - initialBatchesReplayed);
+
+
+        BatchlogManager.markBatchActive(ids.get(0), true);
+
+        BatchlogManager.instance.startBatchlogReplay().get();
+        assertEquals(1L, BatchlogManager.instance.getTotalBatchesReplayed() - initialBatchesReplayed);
+
+        BatchlogManager.markBatchesActive(ids.subList(1, ids.size()), true);
+        BatchlogManager.instance.startBatchlogReplay().get();
+        assertEquals(2L, BatchlogManager.instance.getTotalBatchesReplayed() - initialBatchesReplayed);
+        assertEquals(9L, BatchlogManager.instance.countAllBatches());
+
+        String query = String.format("SELECT batch_id, active FROM %s.%s", SchemaConstants.SYSTEM_KEYSPACE_NAME, SystemKeyspace.BATCHES);
+        UntypedResultSet results = executeInternal(query);
+        for (UntypedResultSet.Row row : results)
+        {
+            boolean active = row.getBoolean("active");
+            UUID rowid = row.getUUID("batch_id");
+            int x = 1;
+        }
+
+        BatchlogManager.instance.startBatchlogReplay().get();
+        assertEquals(11L, BatchlogManager.instance.getTotalBatchesReplayed() - initialBatchesReplayed);
+        assertEquals(0, BatchlogManager.instance.countAllBatches());
+        UntypedResultSet result = executeInternal(String.format("SELECT count(*) FROM \"%s\".\"%s\"", KEYSPACE1, CF_STANDARD7));
+        assertEquals(10, result.one().getLong("count"));
+
     }
 
     @Test
@@ -270,6 +413,98 @@ public class BatchlogManagerTest
             assertEquals("val" + i, result.one().getString("val"));
         }
     }
+// TODO: fix this to test conversion between 3 & 4
+//    @Test
+    @SuppressWarnings("deprecation")
+    public void testConversion() throws Exception
+    {
+        long initialAllBatches = BatchlogManager.instance.countAllBatches();
+        long initialReplayedBatches = BatchlogManager.instance.getTotalBatchesReplayed();
+        TableMetadata cfm = Schema.instance.getTableMetadata(KEYSPACE1, CF_STANDARD4);
+
+        // Generate 1400 version 2.0 mutations and put them all into the batchlog.
+        // Half ready to be replayed, half not.
+        for (int i = 0; i < 1400; i++)
+        {
+            Mutation mutation = new RowUpdateBuilder(cfm, FBUtilities.timestampMicros(), ByteBufferUtil.bytes(i))
+                .clustering("name" + i)
+                .add("val", "val" + i)
+                .build();
+
+            long timestamp = i < 700
+                           ? (System.currentTimeMillis() - BatchlogManager.getBatchlogTimeout())
+                           : (System.currentTimeMillis() + BatchlogManager.getBatchlogTimeout());
+
+
+            Mutation batchMutation = LegacyBatchlogMigrator.getStoreMutation(Batch.createLocal(UUIDGen.getTimeUUID(timestamp, i),
+                                                                                               TimeUnit.MILLISECONDS.toMicros(timestamp),
+                                                                                               Collections.singleton(mutation)),
+                                                                             MessagingService.VERSION_30);
+            assertTrue(LegacyBatchlogMigrator.isLegacyBatchlogMutation(batchMutation));
+            LegacyBatchlogMigrator.handleLegacyMutation(batchMutation);
+        }
+
+        // Mix in 100 current version mutations, 50 ready for replay.
+        for (int i = 1400; i < 1500; i++)
+        {
+            Mutation mutation = new RowUpdateBuilder(cfm, FBUtilities.timestampMicros(), ByteBufferUtil.bytes(i))
+                .clustering("name" + i)
+                .add("val", "val" + i)
+                .build();
+
+            long timestamp = i < 1450
+                           ? (System.currentTimeMillis() - BatchlogManager.getBatchlogTimeout())
+                           : (System.currentTimeMillis() + BatchlogManager.getBatchlogTimeout());
+
+
+            BatchlogManager.store(Batch.createLocal(UUIDGen.getTimeUUID(timestamp, i),
+                                                    FBUtilities.timestampMicros(),
+                                                    Collections.singleton(mutation)));
+        }
+
+        // Flush the batchlog to disk (see CASSANDRA-6822).
+        Keyspace.open(SchemaConstants.SYSTEM_KEYSPACE_NAME).getColumnFamilyStore(SystemKeyspace.BATCHES).forceBlockingFlush();
+
+        assertEquals(1500L, BatchlogManager.instance.countAllBatches() - initialAllBatches);
+        assertEquals(0L, BatchlogManager.instance.getTotalBatchesReplayed() - initialReplayedBatches);
+
+        UntypedResultSet result = executeInternal(String.format("SELECT count(*) FROM \"%s\".\"%s\"", SchemaConstants.SYSTEM_KEYSPACE_NAME, SystemKeyspace.BATCHES));
+        assertNotNull(result);
+        assertEquals("Count in blog", 1500, result.one().getLong("count"));
+
+        // Force batchlog replay and wait for it to complete.
+        BatchlogManager.instance.performInitialReplay();
+
+        // Ensure that the first half, and only the first half, got replayed.
+        assertEquals(750, BatchlogManager.instance.countAllBatches() - initialAllBatches);
+        assertEquals(750, BatchlogManager.instance.getTotalBatchesReplayed() - initialReplayedBatches);
+
+        for (int i = 0; i < 1500; i++)
+        {
+            result = executeInternal(String.format("SELECT * FROM \"%s\".\"%s\" WHERE key = intAsBlob(%d)", KEYSPACE1, CF_STANDARD4, i));
+            assertNotNull(result);
+            if (i < 700 || i >= 1400 && i < 1450)
+            {
+                assertEquals(ByteBufferUtil.bytes(i), result.one().getBytes("key"));
+                assertEquals("name" + i, result.one().getString("name"));
+                assertEquals("val" + i, result.one().getString("val"));
+            }
+            else
+            {
+                assertTrue("Present at " + i, result.isEmpty());
+            }
+        }
+
+        // Ensure that no stray mutations got somehow applied.
+        result = executeInternal(String.format("SELECT count(*) FROM \"%s\".\"%s\"", KEYSPACE1, CF_STANDARD4));
+        assertNotNull(result);
+        assertEquals(750L, result.one().getLong("count"));
+
+        // Ensure batchlog is left as expected.
+        result = executeInternal(String.format("SELECT count(*) FROM \"%s\".\"%s\"", SchemaConstants.SYSTEM_KEYSPACE_NAME, SystemKeyspace.BATCHES));
+        assertNotNull(result);
+        assertEquals("Count in blog after initial replay", 750, result.one().getLong("count"));
+    }
 
     @Test
     public void testAddBatch() throws IOException
@@ -294,13 +529,14 @@ public class BatchlogManagerTest
         BatchlogManager.store(Batch.createLocal(uuid, timestamp, mutations));
         Assert.assertEquals(initialAllBatches + 1, BatchlogManager.instance.countAllBatches());
 
-        String query = String.format("SELECT count(*) FROM %s.%s where id = %s",
+        String query = String.format("SELECT count(*) FROM %s.%s where batch_id = %s",
                                      SchemaConstants.SYSTEM_KEYSPACE_NAME,
                                      SystemKeyspace.BATCHES,
                                      uuid);
         UntypedResultSet result = executeInternal(query);
         assertNotNull(result);
-        assertEquals(1L, result.one().getLong("count"));
+        assertEquals(10L, result.one().getLong("count"));
+        assertEquals(1L, BatchlogManager.instance.countAllBatches());
     }
 
     @Test
@@ -331,7 +567,7 @@ public class BatchlogManagerTest
 
         assertEquals(initialAllBatches, BatchlogManager.instance.countAllBatches());
 
-        String query = String.format("SELECT count(*) FROM %s.%s where id = %s",
+        String query = String.format("SELECT count(*) FROM %s.%s where batch_id = %s",
                                      SchemaConstants.SYSTEM_KEYSPACE_NAME,
                                      SystemKeyspace.BATCHES,
                                      uuid);

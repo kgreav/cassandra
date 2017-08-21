@@ -802,31 +802,38 @@ public class StorageProxy implements StorageProxyMBean
 
     /**
      * Use this method to have these Mutations applied
-     * across all replicas.
+     * across all replicas. Will use the batchlog to ensure all replicas are eventually updated.
      *
      * @param mutations the mutations to be applied across the replicas
      * @param writeCommitLog if commitlog should be written
      * @param baseComplete time from epoch in ms that the local base mutation was(or will be) completed
      * @param queryStartNanoTime the value of System.nanoTime() when the query started to be processed
+     * @param markActive Whether to mark the created batch active when storing in the batchlog. The batch will need
+     *                   to be marked active through {@link BatchlogManager#markBatchActive(UUID, boolean)} in order
+     *                   to be replayed
+     * @return UUID of the created batch
      */
-    public static void mutateMV(ByteBuffer dataKey, Collection<Mutation> mutations, boolean writeCommitLog, AtomicLong baseComplete, long queryStartNanoTime)
+    public static UUID mutateMV(ByteBuffer dataKey, Collection<Mutation> mutations,
+                                boolean writeCommitLog,
+                                AtomicLong baseComplete,
+                                long queryStartNanoTime,
+                                boolean markActive)
     throws UnavailableException, OverloadedException, WriteTimeoutException
     {
         Tracing.trace("Determining replicas for mutation");
         final String localDataCenter = DatabaseDescriptor.getEndpointSnitch().getDatacenter(FBUtilities.getBroadcastAddress());
 
         long startTime = System.nanoTime();
-
+        final UUID batchUUID = UUIDGen.getTimeUUID();
 
         try
         {
             // if we haven't joined the ring, write everything to batchlog because paired replicas may be stale
-            final UUID batchUUID = UUIDGen.getTimeUUID();
-
             if (StorageService.instance.isStarting() || StorageService.instance.isJoining() || StorageService.instance.isMoving())
             {
-                BatchlogManager.store(Batch.createLocal(batchUUID, FBUtilities.timestampMicros(),
-                                                        mutations), writeCommitLog);
+                BatchlogManager.store(Batch.createLocal(batchUUID, FBUtilities.timestampMicros(), mutations),
+                                      writeCommitLog,
+                                      markActive);
             }
             else
             {
@@ -891,7 +898,11 @@ public class StorageProxy implements StorageProxyMBean
 
                 // Apply to local batchlog memtable in this thread
                 if (!nonLocalMutations.isEmpty())
-                    BatchlogManager.store(Batch.createLocal(batchUUID, FBUtilities.timestampMicros(), nonLocalMutations), writeCommitLog);
+                {
+                    BatchlogManager.store(Batch.createLocal(batchUUID, FBUtilities.timestampMicros(), nonLocalMutations),
+                                          writeCommitLog,
+                                          markActive);
+                }
 
                 // Perform remote writes
                 if (!wrappers.isEmpty())
@@ -902,6 +913,8 @@ public class StorageProxy implements StorageProxyMBean
         {
             viewWriteMetrics.addNano(System.nanoTime() - startTime);
         }
+
+        return batchUUID;
     }
 
     @SuppressWarnings("unchecked")
