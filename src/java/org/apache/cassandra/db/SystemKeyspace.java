@@ -87,7 +87,7 @@ public final class SystemKeyspace
     // Cassandra was not previously installed and we're in the process of starting a fresh node.
     public static final CassandraVersion NULL_VERSION = new CassandraVersion("0.0.0-absent");
 
-    public static final String BATCHES = "batches";
+    public static final String BATCHES = "batchlog_v3";
     public static final String PAXOS = "paxos";
     public static final String BUILT_INDEXES = "IndexInfo";
     public static final String LOCAL = "local";
@@ -104,15 +104,22 @@ public final class SystemKeyspace
     public static final String PREPARED_STATEMENTS = "prepared_statements";
     public static final String REPAIRS = "repairs";
 
+    @Deprecated public static final String LEGACY_BATCHLOG_V2 = "batches";
+
+    // Each batch is stored as a partition, where each row is a mutation included in the batch.
+    // active is set when the batch is ready to be replayed (all rows are stored in the partition)
     public static final TableMetadata Batches =
         parse(BATCHES,
               "batches awaiting replay",
               "CREATE TABLE %s ("
-              + "id timeuuid,"
-              + "mutations list<blob>,"
-              + "version int,"
-              + "PRIMARY KEY ((id)))")
+              + "batch_id timeuuid,"
+              + "mutation_id bigint,"
+              + "mutation blob,"
+              + "version int static,"    // MessagingService version for this batch
+              + "active boolean static," // Whether batch can be replayed
+              + "PRIMARY KEY ((batch_id), mutation_id))")
               .partitioner(new LocalPartitioner(TimeUUIDType.instance))
+              .comment("Used for replaying logged batches until they succed.")
               .compaction(CompactionParams.scts(singletonMap("min_threshold", "2")))
               .build();
 
@@ -308,6 +315,20 @@ public final class SystemKeyspace
               + "cfids set<uuid>, "
               + "PRIMARY KEY (parent_id))").build();
 
+    @Deprecated
+    public static final TableMetadata LegacyBatchlogV2 =
+        parse(LEGACY_BATCHLOG_V2,
+                "*DEPRECATED* batches awaiting replay",
+                "CREATE TABLE %s ("
+                + "id timeuuid,"
+                + "mutations list<blob>,"
+                + "version int,"
+                + "PRIMARY KEY ((id)))")
+                .partitioner(new LocalPartitioner(TimeUUIDType.instance))
+                .compaction(CompactionParams.scts(singletonMap("min_threshold", "2")))
+                .gcGraceSeconds(0)
+                .build();
+
     private static TableMetadata.Builder parse(String table, String description, String cql)
     {
         return CreateTableStatement.parse(format(cql, table), SchemaConstants.SYSTEM_KEYSPACE_NAME)
@@ -318,6 +339,8 @@ public final class SystemKeyspace
                                    .comment(description);
     }
 
+
+
     public static KeyspaceMetadata metadata()
     {
         return KeyspaceMetadata.create(SchemaConstants.SYSTEM_KEYSPACE_NAME, KeyspaceParams.local(), tables(), Views.none(), Types.none(), functions());
@@ -325,8 +348,8 @@ public final class SystemKeyspace
 
     private static Tables tables()
     {
-        return Tables.of(BuiltIndexes,
-                         Batches,
+        return Tables.of(Batches,
+                         BuiltIndexes,
                          Paxos,
                          Local,
                          Peers,
@@ -340,7 +363,8 @@ public final class SystemKeyspace
                          ViewsBuildsInProgress,
                          BuiltViews,
                          PreparedStatements,
-                         Repairs);
+                         Repairs,
+                         LegacyBatchlogV2);
     }
 
     private static Functions functions()

@@ -26,6 +26,8 @@ import com.google.common.collect.Iterables;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.PeekingIterator;
 
+import org.apache.cassandra.batchlog.Batch;
+import org.apache.cassandra.batchlog.BatchlogManager;
 import org.apache.cassandra.db.*;
 import org.apache.cassandra.db.commitlog.CommitLogPosition;
 import org.apache.cassandra.db.filter.*;
@@ -137,17 +139,30 @@ public class TableViews extends AbstractCollection<View>
 
         ColumnFamilyStore cfs = Keyspace.openAndGetStore(update.metadata());
         long start = System.nanoTime();
-        Collection<Mutation> mutations;
+        Iterator<Collection<Mutation>> mutations;
+        List<UUID> batchIds = new ArrayList<>();
         try (ReadExecutionController orderGroup = command.executionController();
              UnfilteredRowIterator existings = UnfilteredPartitionIterators.getOnlyElement(command.executeLocally(orderGroup), command);
              UnfilteredRowIterator updates = update.unfilteredIterator())
         {
-            mutations = Iterators.getOnlyElement(generateViewUpdates(views, updates, existings, nowInSec, false));
+            mutations = generateViewUpdates(views, updates, existings, nowInSec);
         }
+
         Keyspace.openAndGetStore(update.metadata()).metric.viewReadTime.update(System.nanoTime() - start, TimeUnit.NANOSECONDS);
 
-        if (!mutations.isEmpty())
-            StorageProxy.mutateMV(update.partitionKey().getKey(), mutations, writeCommitLog, baseComplete, queryStartNanoTime);
+        // We store each MV mutation destined for a remote replica to the local batchlog to ensure the mutation is
+        // always eventually applied. As a single partition update (e.g: partition deletions) could generate *many* MV
+        // mutations we allow them to be split over many batches. This means that we need to ensure that all batches
+        // relevant to 1 partition are applied together. To achieve this we store all the batches as inactive
+        // (markActive == false) and then only when every batch is stored successfully we mark all the batches active.
+        // If any mutation fails, the whole update will fail and no batches will be replayed.
+        mutations.forEachRemaining(m -> batchIds.add(StorageProxy.mutateMV(update.partitionKey().getKey(),
+                                                                           m,
+                                                                           true,
+                                                                           baseComplete,
+                                                                           System.nanoTime(),
+                                                                           false)));
+        BatchlogManager.markBatchesActive(batchIds, writeCommitLog);
     }
 
 
@@ -157,20 +172,18 @@ public class TableViews extends AbstractCollection<View>
      *
      * @param views the views potentially affected by {@code updates}.
      * @param updates the base table updates being applied.
-     * @param existings the existing values for the rows affected by {@code updates}. This is used to decide if a view is
+     * @param existings the existing values for the rows affected by {@code updates} in the base. This is used to decide if a view is
      * obsoleted by the update and should be removed, gather the values for columns that may not be part of the update if
      * a new view entry needs to be created, and compute the minimal updates to be applied if the view entry isn't changed
      * but has simply some updated values. This will be empty for view building as we want to assume anything we'll pass
      * to {@code updates} is new.
      * @param nowInSec the current time in seconds.
-     * @param separateUpdates, if false, mutation is per partition.
      * @return the mutations to apply to the {@code views}. This can be empty.
      */
     public Iterator<Collection<Mutation>> generateViewUpdates(Collection<View> views,
                                                               UnfilteredRowIterator updates,
                                                               UnfilteredRowIterator existings,
-                                                              int nowInSec,
-                                                              boolean separateUpdates)
+                                                              int nowInSec)
     {
         assert updates.metadata().id.equals(baseTableMetadata.id);
 
@@ -263,80 +276,59 @@ public class TableViews extends AbstractCollection<View>
             }
         }
 
-        if (separateUpdates)
+        final Collection<Mutation> firstBuild = buildMutations(baseTableMetadata.get(), generators);
+
+        return new Iterator<Collection<Mutation>>()
         {
-            final Collection<Mutation> firstBuild = buildMutations(baseTableMetadata.get(), generators);
+            // If the previous values are already empty, this update must be either empty or exclusively appending.
+            // In the case we are exclusively appending, we need to drop the build that was passed in and try to build a
+            // new first update instead.
+            // If there are no other updates, next will be null and the iterator will be empty.
+            Collection<Mutation> next = firstBuild.isEmpty()
+                                        ? buildNext()
+                                        : firstBuild;
 
-            return new Iterator<Collection<Mutation>>()
+            private Collection<Mutation> buildNext()
             {
-                // If the previous values are already empty, this update must be either empty or exclusively appending.
-                // In the case we are exclusively appending, we need to drop the build that was passed in and try to build a
-                // new first update instead.
-                // If there are no other updates, next will be null and the iterator will be empty.
-                Collection<Mutation> next = firstBuild.isEmpty()
-                                            ? buildNext()
-                                            : firstBuild;
-
-                private Collection<Mutation> buildNext()
+                while (updatesIter.hasNext())
                 {
-                    while (updatesIter.hasNext())
-                    {
-                        Unfiltered update = updatesIter.next();
-                        // If it's a range tombstone, it removes nothing pre-exisiting, so we can ignore it for view updates
-                        if (update.isRangeTombstoneMarker())
-                            continue;
+                    Unfiltered update = updatesIter.next();
+                    // If it's a range tombstone, it removes nothing pre-exisiting, so we can ignore it for view updates
+                    if (update.isRangeTombstoneMarker())
+                        continue;
 
-                        Row updateRow = (Row) update;
-                        addToViewUpdateGenerators(emptyRow(updateRow.clustering(), existingsDeletion.currentDeletion()),
-                                                  updateRow,
-                                                  generators,
-                                                  nowInSec);
+                    Row updateRow = (Row) update;
+                    addToViewUpdateGenerators(emptyRow(updateRow.clustering(), existingsDeletion.currentDeletion()),
+                                              updateRow,
+                                              generators,
+                                              nowInSec);
 
-                        // If the updates have been filtered, then we won't have any mutations; we need to make sure that we
-                        // only return if the mutations are empty. Otherwise, we continue to search for an update which is
-                        // not filtered
-                        Collection<Mutation> mutations = buildMutations(baseTableMetadata.get(), generators);
-                        if (!mutations.isEmpty())
-                            return mutations;
-                    }
-
-                    return null;
+                    // If the updates have been filtered, then we won't have any mutations; we need to make sure that we
+                    // only return if the mutations are empty. Otherwise, we continue to search for an update which is
+                    // not filtered
+                    Collection<Mutation> mutations = buildMutations(baseTableMetadata.get(), generators);
+                    if (!mutations.isEmpty())
+                        return mutations;
                 }
 
-                public boolean hasNext()
-                {
-                    return next != null;
-                }
-
-                public Collection<Mutation> next()
-                {
-                    Collection<Mutation> mutations = next;
-
-                    next = buildNext();
-
-                    assert !mutations.isEmpty() : "Expected mutations to be non-empty";
-                    return mutations;
-                }
-            };
-        }
-        else
-        {
-            while (updatesIter.hasNext())
-            {
-                Unfiltered update = updatesIter.next();
-                // If it's a range tombstone, it removes nothing pre-exisiting, so we can ignore it for view updates
-                if (update.isRangeTombstoneMarker())
-                    continue;
-
-                Row updateRow = (Row) update;
-                addToViewUpdateGenerators(emptyRow(updateRow.clustering(), existingsDeletion.currentDeletion()),
-                                          updateRow,
-                                          generators,
-                                          nowInSec);
+                return null;
             }
 
-            return Iterators.singletonIterator(buildMutations(baseTableMetadata.get(), generators));
-        }
+            public boolean hasNext()
+            {
+                return next != null;
+            }
+
+            public Collection<Mutation> next()
+            {
+                Collection<Mutation> mutations = next;
+
+                next = buildNext();
+
+                assert !mutations.isEmpty() : "Expected mutations to be non-empty";
+                return mutations;
+            }
+        };
     }
 
     /**
@@ -361,7 +353,7 @@ public class TableViews extends AbstractCollection<View>
     }
 
     /**
-     * Returns the command to use to read the existing rows required to generate view updates for the provided base
+     * Returns the command to use to read the existing rows in the base required to generate view updates for the provided
      * base updates.
      *
      * @param updates the base table updates being applied.
