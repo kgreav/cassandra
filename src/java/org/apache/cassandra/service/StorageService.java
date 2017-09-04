@@ -24,7 +24,14 @@ import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.util.*;
 import java.util.Map.Entry;
-import java.util.concurrent.*;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.MatchResult;
@@ -1111,19 +1118,24 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     public void rebuild(String sourceDc, String keyspace, String tokens, String specificSources)
     {
-        // check ongoing rebuild
-        if (!isRebuilding.compareAndSet(false, true))
-        {
-            throw new IllegalStateException("Node is still rebuilding. Check nodetool netstats.");
-        }
-
         // check the arguments
         if (keyspace == null && tokens != null)
         {
             throw new IllegalArgumentException("Cannot specify tokens without keyspace.");
         }
 
-        logger.info("rebuild from dc: {}, {}, {}", sourceDc == null ? "(any dc)" : sourceDc,
+        if (keyspace != null && !Schema.instance.getNonSystemKeyspaces().contains(keyspace))
+        {
+            throw new IllegalArgumentException("Keyspace " + keyspace + " doesn't exist");
+        }
+
+        // check ongoing rebuild
+        if (!isRebuilding.compareAndSet(false, true))
+        {
+            throw new IllegalStateException("Node is still rebuilding. Check nodetool netstats.");
+        }
+
+        logger.info("Initiating rebuild from DC: {}, {}, {}", sourceDc == null ? "(any dc)" : sourceDc,
                     keyspace == null ? "(All keyspaces)" : keyspace,
                     tokens == null ? "(All tokens)" : tokens);
 
@@ -1142,18 +1154,42 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             if (sourceDc != null)
                 streamer.addSourceFilter(new RangeStreamer.SingleDatacenterFilter(DatabaseDescriptor.getEndpointSnitch(), sourceDc));
 
-            if (keyspace == null)
+            List<String> keyspaces = keyspace == null ?
+                                     Schema.instance.getNonSystemKeyspaces() : Collections.singletonList(keyspace);
+
+            // Restrict the set of source nodes to rebuild from
+            if (specificSources != null)
             {
-                for (String keyspaceName : Schema.instance.getNonLocalStrategyKeyspaces())
-                    streamer.addRanges(keyspaceName, getLocalRanges(keyspaceName));
+                String[] stringHosts = specificSources.split(",");
+                Set<InetAddress> sources = new HashSet<>(stringHosts.length);
+                for (String stringHost : stringHosts)
+                {
+                    try
+                    {
+                        InetAddress endpoint = InetAddress.getByName(stringHost);
+                        if (FBUtilities.getBroadcastAddress().equals(endpoint))
+                        {
+                            throw new IllegalArgumentException("This host was specified as a source for rebuilding. Sources for a rebuild can only be other nodes in the cluster.");
+                        }
+                        sources.add(endpoint);
+                    }
+                    catch (UnknownHostException ex)
+                    {
+                        throw new IllegalArgumentException("Unknown host specified " + stringHost, ex);
+                    }
+                }
+                streamer.addSourceFilter(new RangeStreamer.WhitelistedSourcesFilter(sources));
             }
-            else if (tokens == null)
+
+            if (tokens == null) // all tokens for every keyspace
             {
-                streamer.addRanges(keyspace, getLocalRanges(keyspace));
+                for (String keyspaceName : keyspaces)
+                    streamer.addRanges(keyspaceName, getLocalRanges(keyspaceName));
             }
             else
             {
-                Token.TokenFactory factory = getTokenFactory();
+                // Extract tokens matching rangePattern
+                Token.TokenFactory factory = tokenMetadata.partitioner.getTokenFactory();
                 List<Range<Token>> ranges = new ArrayList<>();
                 Pattern rangePattern = Pattern.compile("\\(\\s*(-?\\w+)\\s*,\\s*(-?\\w+)\\s*\\]");
                 try (Scanner tokenScanner = new Scanner(tokens))
@@ -1163,56 +1199,38 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                         MatchResult range = tokenScanner.match();
                         Token startToken = factory.fromString(range.group(1));
                         Token endToken = factory.fromString(range.group(2));
-                        logger.info("adding range: ({},{}]", startToken, endToken);
+                        logger.debug("Adding range: ({},{}]", startToken, endToken);
                         ranges.add(new Range<>(startToken, endToken));
                     }
                     if (tokenScanner.hasNext())
                         throw new IllegalArgumentException("Unexpected string: " + tokenScanner.next());
                 }
 
-                // Ensure all specified ranges are actually ranges owned by this host
-                Collection<Range<Token>> localRanges = getLocalRanges(keyspace);
-                for (Range<Token> specifiedRange : ranges)
+                // Store ranges to fetch for each keyspace in streamer
+                for (String keyspaceName : keyspaces)
                 {
-                    boolean foundParentRange = false;
-                    for (Range<Token> localRange : localRanges)
+                    // Ensure all specified ranges are actually ranges owned by this host
+                    Collection<Range<Token>> localRanges = getLocalRanges(keyspaceName);
+                    for (Range<Token> specifiedRange : ranges)
                     {
-                        if (localRange.contains(specifiedRange))
+                        boolean foundParentRange = false;
+                        for (Range<Token> localRange : localRanges)
                         {
-                            foundParentRange = true;
-                            break;
-                        }
-                    }
-                    if (!foundParentRange)
-                    {
-                        throw new IllegalArgumentException(String.format("The specified range %s is not a range that is owned by this node. Please ensure that all token ranges specified to be rebuilt belong to this node.", specifiedRange.toString()));
-                    }
-                }
-
-                if (specificSources != null)
-                {
-                    String[] stringHosts = specificSources.split(",");
-                    Set<InetAddress> sources = new HashSet<>(stringHosts.length);
-                    for (String stringHost : stringHosts)
-                    {
-                        try
-                        {
-                            InetAddress endpoint = InetAddress.getByName(stringHost);
-                            if (FBUtilities.getBroadcastAddress().equals(endpoint))
+                            if (localRange.contains(specifiedRange))
                             {
-                                throw new IllegalArgumentException("This host was specified as a source for rebuilding. Sources for a rebuild can only be other nodes in the cluster.");
+                                foundParentRange = true;
+                                break;
                             }
-                            sources.add(endpoint);
                         }
-                        catch (UnknownHostException ex)
+                        if (!foundParentRange)
                         {
-                            throw new IllegalArgumentException("Unknown host specified " + stringHost, ex);
+                            throw new IllegalArgumentException(String.format("The specified range %s is not a range that is owned by this node. "
+                                                                             + "Please ensure that all token ranges specified to be rebuilt belong to this node.",
+                                                                             specifiedRange.toString()));
                         }
                     }
-                    streamer.addSourceFilter(new RangeStreamer.WhitelistedSourcesFilter(sources));
+                    streamer.addRanges(keyspaceName, ranges);
                 }
-
-                streamer.addRanges(keyspace, ranges);
             }
 
             StreamResultFuture resultFuture = streamer.fetchAsync();
