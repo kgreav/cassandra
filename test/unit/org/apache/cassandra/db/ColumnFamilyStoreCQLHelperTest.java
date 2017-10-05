@@ -397,9 +397,9 @@ public class ColumnFamilyStoreCQLHelperTest extends CQLTester
 
         ColumnFamilyStore cfs = Keyspace.open(keyspace).getColumnFamilyStore(table);
 
-        assertEquals(ImmutableList.of("CREATE INDEX \"indexName\" ON cql_test_keyspace_3.test_table_3 (reg1);",
-                                      "CREATE INDEX \"indexName2\" ON cql_test_keyspace_3.test_table_3 (reg1);",
-                                      "CREATE INDEX \"indexName3\" ON cql_test_keyspace_3.test_table_3 (reg1);"),
+        assertEquals(ImmutableList.of("CREATE INDEX IF NOT EXISTS \"indexName\" ON cql_test_keyspace_3.test_table_3 (reg1);",
+                                      "CREATE INDEX IF NOT EXISTS \"indexName2\" ON cql_test_keyspace_3.test_table_3 (reg1);",
+                                      "CREATE INDEX IF NOT EXISTS \"indexName3\" ON cql_test_keyspace_3.test_table_3 (reg1);"),
                      ColumnFamilyStoreCQLHelper.getIndexesAsCQL(cfs.metadata));
     }
 
