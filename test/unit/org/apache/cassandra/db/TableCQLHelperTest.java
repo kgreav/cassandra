@@ -322,10 +322,10 @@ public class TableCQLHelperTest extends CQLTester
 
         ColumnFamilyStore cfs = Keyspace.open(keyspace).getColumnFamilyStore(table);
 
-        assertEquals(ImmutableList.of("CREATE INDEX \"indexName\" ON cql_test_keyspace_3.test_table_3 (values(reg1));",
-                                      "CREATE INDEX \"indexName2\" ON cql_test_keyspace_3.test_table_3 (keys(reg1));",
-                                      "CREATE INDEX \"indexName3\" ON cql_test_keyspace_3.test_table_3 (entries(reg1));",
-                                      "CREATE CUSTOM INDEX \"indexName4\" ON cql_test_keyspace_3.test_table_3 (entries(reg1)) USING 'org.apache.cassandra.index.sasi.SASIIndex';"),
+        assertEquals(ImmutableList.of("CREATE INDEX IF NOT EXISTS \"indexName\" ON cql_test_keyspace_3.test_table_3 (values(reg1));",
+                                      "CREATE INDEX IF NOT EXISTS \"indexName2\" ON cql_test_keyspace_3.test_table_3 (keys(reg1));",
+                                      "CREATE INDEX IF NOT EXISTS \"indexName3\" ON cql_test_keyspace_3.test_table_3 (entries(reg1));",
+                                      "CREATE CUSTOM INDEX IF NOT EXISTS \"indexName4\" ON cql_test_keyspace_3.test_table_3 (entries(reg1)) USING 'org.apache.cassandra.index.sasi.SASIIndex';"),
                      TableCQLHelper.getIndexesAsCQL(cfs.metadata()));
     }
 

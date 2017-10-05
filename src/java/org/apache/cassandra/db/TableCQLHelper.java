@@ -266,7 +266,7 @@ public class TableCQLHelper
                     options.put(k, v);
             });
 
-            return String.format("CREATE CUSTOM INDEX %s ON %s (%s) USING '%s'%s;",
+            return String.format("CREATE CUSTOM INDEX IF NOT EXISTS %s ON %s (%s) USING '%s'%s;",
                                  indexMetadata.toCQLString(),
                                  baseTable.toString(),
                                  indexMetadata.options.get(IndexTarget.TARGET_OPTION_NAME),
@@ -275,7 +275,7 @@ public class TableCQLHelper
         }
         else
         {
-            return String.format("CREATE INDEX %s ON %s (%s);",
+            return String.format("CREATE INDEX IF NOT EXISTS %s ON %s (%s);",
                                  indexMetadata.toCQLString(),
                                  baseTable.toString(),
                                  indexMetadata.options.get(IndexTarget.TARGET_OPTION_NAME));
