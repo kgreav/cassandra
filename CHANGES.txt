@@ -1,4 +1,5 @@
 3.11.2
+ * Indexes creation should have IF EXISTS on its String representation (CASSANDRA-13935)
 Merged from 3.0:
  * Deserialise sstable metadata in nodetool verify (CASSANDRA-13922)
 
