@@ -53,6 +53,7 @@ import org.apache.cassandra.service.paxos.Commit;
 import org.apache.cassandra.transport.messages.ResultMessage;
 import org.apache.cassandra.triggers.TriggerExecutor;
 import org.apache.cassandra.utils.FBUtilities;
+import org.apache.cassandra.utils.MD5Digest;
 import org.apache.cassandra.utils.Pair;
 import org.apache.cassandra.utils.UUIDGen;
 
@@ -501,8 +502,7 @@ public abstract class ModificationStatement implements CQLStatement
     {
         List<ColumnSpecification> specs = new ArrayList<>();
         specs.add(casResultColumnSpecification(ksName, cfName));
-
-        return new ResultSet.ResultMetadata(specs);
+        return new ResultSet.ResultMetadata(MD5Digest.wrap(new byte[]{}), specs);
     }
 
     private static ColumnSpecification casResultColumnSpecification(String ksName, String cfName)
@@ -547,7 +547,7 @@ public abstract class ModificationStatement implements CQLStatement
             row.addAll(right.rows.get(i));
             rows.add(row);
         }
-        return new ResultSet(new ResultSet.ResultMetadata(specs), rows);
+        return new ResultSet(new ResultSet.ResultMetadata(MD5Digest.wrap(new byte[]{}), specs), rows);
     }
 
     private static ResultSet buildCasFailureResultSet(RowIterator partition, Iterable<ColumnMetadata> columnsWithConditions, boolean isBatch, QueryOptions options)
