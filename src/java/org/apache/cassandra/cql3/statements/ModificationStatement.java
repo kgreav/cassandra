@@ -502,7 +502,7 @@ public abstract class ModificationStatement implements CQLStatement
         List<ColumnSpecification> specs = new ArrayList<>();
         specs.add(casResultColumnSpecification(ksName, cfName));
 
-        return new ResultSet.ResultMetadata(specs);
+        return new ResultSet.ResultMetadata(ResultSet.ResultMetadata.EMPTY_DIGEST, specs);
     }
 
     private static ColumnSpecification casResultColumnSpecification(String ksName, String cfName)
@@ -527,6 +527,13 @@ public abstract class ModificationStatement implements CQLStatement
         return success ? rs : merge(rs, buildCasFailureResultSet(partition, columnsWithConditions, isBatch, options));
     }
 
+    /**
+     * Merge two result sets.
+     * @param left
+     * @param right
+     * @return ResultSet containing all columns and rows from both {@code left} and {@code right}. Note that the merged
+     * ResultSet will always have an ID of {@link ResultSet.ResultMetadata#EMPTY_DIGEST}.
+     */
     private static ResultSet merge(ResultSet left, ResultSet right)
     {
         if (left.size() == 0)
@@ -547,7 +554,7 @@ public abstract class ModificationStatement implements CQLStatement
             row.addAll(right.rows.get(i));
             rows.add(row);
         }
-        return new ResultSet(new ResultSet.ResultMetadata(specs), rows);
+        return new ResultSet(new ResultSet.ResultMetadata(ResultSet.ResultMetadata.EMPTY_DIGEST, specs), rows);
     }
 
     private static ResultSet buildCasFailureResultSet(RowIterator partition, Iterable<ColumnMetadata> columnsWithConditions, boolean isBatch, QueryOptions options)

@@ -192,7 +192,9 @@ public class ResultSet
     {
         public static final CBCodec<ResultMetadata> codec = new Codec();
 
-        public static final ResultMetadata EMPTY = new ResultMetadata(MD5Digest.compute(new byte[0]), EnumSet.of(Flag.NO_METADATA), null, 0, null);
+        // Always the same MD5, built from empty byte array.
+        public static final MD5Digest EMPTY_DIGEST = MD5Digest.compute(new byte[0]);
+        public static final ResultMetadata EMPTY = new ResultMetadata(EMPTY_DIGEST, EnumSet.of(Flag.NO_METADATA), null, 0, null);
 
         private final EnumSet<Flag> flags;
         // Please note that columnCount can actually be smaller than names, even if names is not null. This is
