@@ -19,4 +19,10 @@
 Read repair
 -----------
 
-.. todo:: todo
+Read repair occurs when an inconsistency is found amongst the queried replicas during a read. The purpose of read repair is to actively repair inconsistent data as it is found. Read repair only affects rows and cells that are read, so it **should not** be relied upon to "repair" your cluster completely. Manually run repairs are still necessary to ensure consistent data and avoid zombie data.
+
+To perform a read we issue a data query to the fastest replica, and a digest query to all the others. Based on the consistency level chosen, we wait for the desired number of acknowledgements from the replicas  and once we receive enough acknowledgements we compare the digests and data to ensure consistency. If there is a mismatch between digests we then perform a read repair, which will update the involved replicas with the latest copy of the data, ensuring both have the same data. With a consistency level less than ``ALL`` the queried data from the fastest replica will be returned immediately, and the read repair will occur in the background. This means that in almost all cases, at most the first instance of a query will return old data.
+
+**Note:** Only at a consistency level of ``ALL`` will **all** replicas be repaired.
+
+Range scans are not per-key and do not perform read repair. A range scan at CL > ONE *will* reconcile differences in replicas required to achieve the given CL, but extra replicas are not compared in the background and will not be repaired.
