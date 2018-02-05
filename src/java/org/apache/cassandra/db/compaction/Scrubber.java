@@ -35,6 +35,7 @@ import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.OutputHandler;
+import org.apache.cassandra.utils.concurrent.Refs;
 
 public class Scrubber implements Closeable
 {
@@ -138,7 +139,7 @@ public class Scrubber implements Closeable
         outputHandler.output(String.format("Scrubbing %s (%s bytes)", sstable, dataFile.length()));
         Set<SSTableReader> oldSSTable = Sets.newHashSet(sstable);
         SSTableRewriter writer = new SSTableRewriter(cfs, oldSSTable, sstable.maxDataAge, isOffline);
-        try
+        try (Refs<SSTableReader> refs = Refs.ref(Collections.singleton(sstable)))
         {
             nextIndexKey = indexAvailable() ? ByteBufferUtil.readWithShortLength(indexFile) : null;
             if (indexAvailable())

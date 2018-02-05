@@ -826,7 +826,8 @@ public class CompactionManager implements CompactionManagerMBean
         Set<SSTableReader> oldSSTable = Sets.newHashSet(sstable);
         SSTableRewriter writer = new SSTableRewriter(cfs, oldSSTable, sstable.maxDataAge, false);
         List<SSTableReader> finished;
-        try (CompactionController controller = new CompactionController(cfs, sstableSet, getDefaultGcBefore(cfs)))
+        try (CompactionController controller = new CompactionController(cfs, sstableSet, getDefaultGcBefore(cfs));
+             Refs<SSTableReader> refs = Refs.ref(Collections.singleton(sstable)))
         {
             writer.switchWriter(createWriter(cfs, compactionFileLocation, expectedBloomFilterSize, sstable.getSSTableMetadata().repairedAt, sstable));
 
