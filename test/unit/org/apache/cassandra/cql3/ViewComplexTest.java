@@ -401,7 +401,7 @@ public class ViewComplexTest extends CQLTester
         assertRowsIgnoringOrder(execute("SELECT * from %s WHERE c = ? AND p = ?", 0, 0), row(0, 0, null, 1));
         assertRowsIgnoringOrder(execute("SELECT * from mv WHERE c = ? AND p = ?", 0, 0), row(0, 0));
 
-        assertInvalidMessage("Cannot drop column v2 on base table with materialized views", "ALTER TABLE %s DROP v2");
+        assertInvalidMessage(String.format("Cannot drop column v2 on base table %s with materialized views", currentTable()), "ALTER TABLE %s DROP v2");
         // // drop unselected base column, unselected metadata should be removed, thus view row is dead
         // updateView("ALTER TABLE %s DROP v2");
         // assertRowsIgnoringOrder(execute("SELECT * from %s WHERE c = ? AND p = ?", 0, 0));
@@ -462,7 +462,7 @@ public class ViewComplexTest extends CQLTester
         assertRowsIgnoringOrder(execute("SELECT k,c,a,b from %s"), row(1, 1, null, null));
         assertRowsIgnoringOrder(execute("SELECT * from mv"), row(1, 1, null, null));
 
-        assertInvalidMessage("Cannot drop column m on base table with materialized views", "ALTER TABLE %s DROP m");
+        assertInvalidMessage(String.format("Cannot drop column m on base table %s with materialized views", currentTable()), "ALTER TABLE %s DROP m");
         // executeNet(protocolVersion, "ALTER TABLE %s DROP m");
         // ks.getColumnFamilyStore("mv").forceMajorCompaction();
         // assertRowsIgnoringOrder(execute("SELECT k,c,a,b from %s WHERE k = 1 AND c = 1"));
@@ -931,7 +931,7 @@ public class ViewComplexTest extends CQLTester
         assertRowsIgnoringOrder(execute("SELECT k,a,b from mv"), row(1, 1, 2));
         assertRowsIgnoringOrder(execute("SELECT k,a,b from %s"), row(1, 1, 2));
 
-        assertInvalidMessage("Cannot drop column a on base table with materialized views", "ALTER TABLE %s DROP a");
+        assertInvalidMessage(String.format("Cannot drop column a on base table %s with materialized views", currentTable()), "ALTER TABLE %s DROP a");
     }
 
     @Test
