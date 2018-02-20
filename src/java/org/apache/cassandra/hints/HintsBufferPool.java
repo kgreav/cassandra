@@ -17,6 +17,7 @@
  */
 package org.apache.cassandra.hints;
 
+import java.util.Iterator;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -60,6 +61,24 @@ final class HintsBufferPool
         {
             allocation.write(hostIds, hint);
         }
+    }
+
+    /**
+     * Get the earliest hint for a specific node from all buffers
+     * @param hostId UUID of the node
+     * @return timestamp for the earliest hint
+     */
+    long getEarliestHintForHost(UUID hostId)
+    {
+        long min = currentBuffer().getEarliestHintTime(hostId);
+        Iterator<HintsBuffer> it = reserveBuffers.iterator();
+        while (it.hasNext())
+        {
+            HintsBuffer next = it.next();
+            min = Math.min(min, next.getEarliestHintTime(hostId));
+        }
+
+        return min;
     }
 
     private HintsBuffer.Allocation allocate(int hintSize)

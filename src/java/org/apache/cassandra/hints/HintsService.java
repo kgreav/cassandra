@@ -374,6 +374,20 @@ public final class HintsService implements HintsServiceMBean
         return dispatchExecutor.transfer(catalog, hostIdSupplier);
     }
 
+    /**
+     * Get the earliest hint written for a particular node,
+     * @param hostID UUID of the node to check it's hints.
+     * @return Earliest hint as per unix time.
+     */
+    public long getEarliestHintForNode(UUID hostID)
+    {
+        // Need to check only the first descriptor + all buffers.
+        HintsStore store = catalog.get(hostID);
+        HintsDescriptor desc = store.getFirstDescriptor();
+        long timestamp = desc == null ? System.currentTimeMillis() : desc.timestamp;
+        return Math.min(timestamp, bufferPool.getEarliestHintForHost(hostID));
+    }
+
     HintsCatalog getCatalog()
     {
         return catalog;

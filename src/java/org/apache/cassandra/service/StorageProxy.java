@@ -2494,7 +2494,14 @@ public class StorageProxy implements StorageProxyMBean
                     return false;
                 }
             }
-            boolean hintWindowExpired = Gossiper.instance.getEndpointDowntime(ep) > DatabaseDescriptor.getMaxHintWindow();
+
+            // Don't hint if the node has been down for longer than the hint window, OR if the earliest hint we have on
+            // disk is longer than the hint window.
+            // We'll only start storing hints again after we've replayed enough hints to bring the hint files within
+            // the hint window.
+            long earliestHint = HintsService.instance.getEarliestHintForNode(StorageService.instance.getHostIdForEndpoint(ep));
+            boolean hintWindowExpired = Gossiper.instance.getEndpointDowntime(ep) > DatabaseDescriptor.getMaxHintWindow()
+                                        || earliestHint < System.currentTimeMillis() - DatabaseDescriptor.getMaxHintWindow();
             if (hintWindowExpired)
             {
                 HintsService.instance.metrics.incrPastWindow(ep);
