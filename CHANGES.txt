@@ -28,6 +28,7 @@ Merged from 2.1:
 
 
 3.11.2
+ * Revert CASSANDRA-13797 (Don't block RepairJob execution on validation futures)
  * Fix ReadCommandTest (CASSANDRA-14234)
  * Remove trailing period from latency reports at keyspace level (CASSANDRA-14233)
  * Backport CASSANDRA-13080: Use new token allocation for non bootstrap case as well (CASSANDRA-14212)
