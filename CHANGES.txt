@@ -19,6 +19,7 @@ Merged from 2.1:
 
 
 3.0.16
+ * Revert CASSANDRA-13797 (Don't block RepairJob execution on validation futures)
  * Fix unit test failures in ViewComplexTest (CASSANDRA-14219)
  * Add MinGW uname check to start scripts (CASSANDRA-12940)
  * Protect against overflow of local expiration time (CASSANDRA-14092)
