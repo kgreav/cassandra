@@ -859,6 +859,11 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         return endpointStateMap.entrySet();
     }
 
+    public Set<Entry<InetAddress, EndpointState>> getEndpointShadowStates()
+    {
+        return endpointShadowStateMap.entrySet();
+    }
+
     public UUID getHostId(InetAddress endpoint)
     {
         return getHostId(endpoint, endpointStateMap);
@@ -1588,7 +1593,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
                 if (!seeds.contains(respondent))
                     logger.warn("Received an ack from {}, who isn't a seed. Ensure your seed list includes a live node. Exiting shadow round",
                                 respondent);
-                logger.debug("Received a regular ack from {}, can now exit shadow round", respondent);
+                logger.debug("Received a regular ack from {}, can now exit shadow round. EPSIZE: {}", respondent, epStateMap.size());
                 // respondent sent back a full ack, so we can exit our shadow round
                 endpointShadowStateMap.putAll(epStateMap);
                 inShadowRound = false;

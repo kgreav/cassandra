@@ -550,8 +550,10 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         logger.debug("Starting shadow gossip round to check for endpoint collision");
         Map<InetAddress, EndpointState> epStates = Gossiper.instance.doShadowRound(peers);
 
-        if (epStates.isEmpty() && DatabaseDescriptor.getSeeds().contains(FBUtilities.getBroadcastAddress()))
-            logger.info("Unable to gossip with any peers but continuing anyway since node is in its own seed list");
+        if (epStates.isEmpty() && shouldBootstrap())
+            throw new RuntimeException("Bootstrap required but unable to gossip to any seed. Check seeds are live");
+        else if (epStates.isEmpty() && !isOnlyMember())
+            logger.warn("No seeds or peers are live, starting unsafely.");
 
         // If bootstrapping, check whether any previously known status for the endpoint makes it unsafe to do so.
         // If not bootstrapping, compare the host id for this endpoint learned from gossip (if any) with the local
@@ -752,7 +754,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     private boolean shouldBootstrap()
     {
-        return DatabaseDescriptor.isAutoBootstrap() && !SystemKeyspace.bootstrapComplete() && !isSeed();
+        return DatabaseDescriptor.isAutoBootstrap() && !SystemKeyspace.bootstrapComplete() && (!isSeed() || !isOnlyMember());
     }
 
     public static boolean isSeed()
@@ -885,10 +887,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                          SystemKeyspace.bootstrapComplete(),
                          DatabaseDescriptor.getSeeds().contains(FBUtilities.getBroadcastAddress()));
         }
-        if (DatabaseDescriptor.isAutoBootstrap() && !SystemKeyspace.bootstrapComplete() && DatabaseDescriptor.getSeeds().contains(FBUtilities.getBroadcastAddress()))
-        {
-            logger.info("This node will not auto bootstrap because it is configured to be a seed node.");
-        }
+        if (DatabaseDescriptor.isAutoBootstrap()
+            && !SystemKeyspace.bootstrapComplete()
+            && DatabaseDescriptor.getSeeds().contains(FBUtilities.getBroadcastAddress())
+            && isOnlyMember())
+            logger.info("This node will not auto bootstrap because it is configured to be a seed node and is the first node in the cluster.");
 
         boolean dataAvailable = true; // make this to false when bootstrap streaming failed
         boolean bootstrap = shouldBootstrap();
@@ -1021,6 +1024,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
         {
             logger.info("Startup complete, but write survey mode is active, not becoming an active ring member. Use JMX (StorageService->joinRing()) to finalize ring joining.");
         }
+    }
+
+    public boolean isOnlyMember()
+    {
+        return Gossiper.instance.getEndpointShadowStates().size() < 1;
     }
 
     public static boolean isReplacingSameAddress()
