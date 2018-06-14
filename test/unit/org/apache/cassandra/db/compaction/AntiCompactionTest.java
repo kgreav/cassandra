@@ -23,10 +23,14 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
+import java.util.SortedSet;
+import java.util.TreeSet;
 import java.util.UUID;
+import java.util.concurrent.ExecutionException;
 
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.RateLimiter;
 import org.junit.BeforeClass;
 import org.junit.After;
@@ -258,7 +262,7 @@ public class AntiCompactionTest
     }
 
     @Test
-    public void shouldMutateRepairedAt() throws InterruptedException, IOException
+    public void shouldMutateRepairedAt() throws InterruptedException, IOException, ExecutionException
     {
         ColumnFamilyStore store = prepareColumnFamilyStore();
         Collection<SSTableReader> sstables = getUnrepairedSSTables(store);
@@ -273,10 +277,33 @@ public class AntiCompactionTest
             CompactionManager.instance.performAnticompaction(store, ranges, refs, txn, 1, parentRepairSession);
         }
 
+        SSTableReader sstable = Iterables.get(store.getLiveSSTables(), 0);
         assertThat(store.getLiveSSTables().size(), is(1));
-        assertThat(Iterables.get(store.getLiveSSTables(), 0).isRepaired(), is(true));
-        assertThat(Iterables.get(store.getLiveSSTables(), 0).selfRef().globalCount(), is(1));
+        assertThat(sstable.isRepaired(), is(true));
+        assertThat(sstable.selfRef().globalCount(), is(1));
         assertThat(store.getTracker().getCompacting().size(), is(0));
+
+        prepareColumnFamilyStore();
+        // Test we don't anti-compact already repaired SSTables.
+        sstables = store.getLiveSSTables();
+        try (Refs<SSTableReader> refs = Refs.ref(sstables))
+        {
+            // use different repairedAt to test it hasn't changed, and submitAntiCompaction to test
+            ListenableFuture fut = CompactionManager.instance.submitAntiCompaction(store, ranges, refs, 200, parentRepairSession);
+            fut.get();
+        }
+
+        SortedSet<SSTableReader> sstablesSorted = new TreeSet<>(SSTableReader.generationReverseComparator.reversed());
+        sstablesSorted.addAll(store.getLiveSSTables());
+        assertThat(sstablesSorted.size(), is(2));
+        assertThat(sstablesSorted.first().isRepaired(), is(true));
+        assertThat(sstablesSorted.last().isRepaired(), is(true));
+        assertThat(sstablesSorted.first().getSSTableMetadata().repairedAt, is(1L));
+        assertThat(sstablesSorted.last().getSSTableMetadata().repairedAt, is(200L));
+        assertThat(sstablesSorted.first().selfRef().globalCount(), is(1));
+        assertThat(sstablesSorted.last().selfRef().globalCount(), is(1));
+        assertThat(store.getTracker().getCompacting().size(), is(0));
+
     }
 
 
@@ -337,6 +364,5 @@ public class AntiCompactionTest
     {
         return ImmutableSet.copyOf(cfs.getTracker().getView().sstables(SSTableSet.LIVE, (s) -> !s.isRepaired()));
     }
-
 
 }
