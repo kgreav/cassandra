@@ -440,6 +440,21 @@ public class CassandraDaemon
      */
     public void start()
     {
+        // We only start transports if bootstrap has completed and we're not in survey mode, OR if we are in
+        // survey mode and streaming has completed but we're not using auth.
+        if ((!StorageService.instance.isSurveyMode() && !SystemKeyspace.bootstrapComplete()) ||
+                (StorageService.instance.isSurveyMode() && StorageService.instance.isBootstrapMode()))
+        {
+            logger.info("Not starting client transports as bootstrap has not completed");
+            return;
+        }
+        else if (StorageService.instance.isSurveyMode() && DatabaseDescriptor.getAuthenticator().requireAuthentication())
+        {
+            // Auth isn't initialised until we join the ring, so if we're in survey mode auth will always fail.
+            logger.info("Not starting client transports as write_survey mode and authentication is enabled");
+            return;
+        }
+
         String nativeFlag = System.getProperty("cassandra.start_native_transport");
         if ((nativeFlag != null && Boolean.parseBoolean(nativeFlag)) || (nativeFlag == null && DatabaseDescriptor.startNativeTransport()))
         {
