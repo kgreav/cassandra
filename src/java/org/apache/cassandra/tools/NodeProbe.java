@@ -660,6 +660,8 @@ public class NodeProbe implements AutoCloseable
         return ssProxy.isDraining();
     }
 
+    public boolean isBootstrapMode() { return ssProxy.isBootstrapMode(); }
+
     public void joinRing() throws IOException
     {
         ssProxy.joinRing();
