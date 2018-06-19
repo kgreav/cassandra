@@ -615,13 +615,12 @@ public class CompactionManager implements CompactionManagerMBean
                     for (SSTableReader compactingSSTable : cfs.getTracker().getCompacting())
                         sstables.releaseIfHolds(compactingSSTable);
                     // We don't anti-compact any SSTable that has been compacted during repair as it may have been compacted
-                    // with unrepaired data. We also don't anti-compact SSTables already marked repaired. See CASSANDRA-13153
-                    // and CASSANDRA-14423.
-                    Set<SSTableReader> excludedSSTables = new HashSet<>();
+                    // with unrepaired data.
+                    Set<SSTableReader> compactedSSTables = new HashSet<>();
                     for (SSTableReader sstable : sstables)
                         if (sstable.isMarkedCompacted())
-                            excludedSSTables.add(sstable);
-                    sstables.release(excludedSSTables);
+                            compactedSSTables.add(sstable);
+                    sstables.release(compactedSSTables);
                     modifier = cfs.getTracker().tryModify(sstables, OperationType.ANTICOMPACTION);
                 }
                 performAnticompaction(cfs, ranges, sstables, modifier, repairedAt, parentRepairSession);
@@ -683,6 +682,8 @@ public class CompactionManager implements CompactionManagerMBean
             {
                 SSTableReader sstable = sstableIterator.next();
                 List<String> anticompactRanges = new ArrayList<>();
+                // We don't anti-compact SSTables already marked repaired. See CASSANDRA-13153
+                // and CASSANDRA-14423.
                 if (sstable.isRepaired()) // We never anti-compact already repaired SSTables
                     nonAnticompacting.add(sstable);
 
@@ -697,7 +698,8 @@ public class CompactionManager implements CompactionManagerMBean
                         logger.info("[repair #{}] SSTable {} fully contained in range {}, mutating repairedAt instead of anticompacting", parentRepairSession, sstable, r);
                         sstable.descriptor.getMetadataSerializer().mutateRepairedAt(sstable.descriptor, repairedAt);
                         sstable.reloadSSTableMetadata();
-                        mutatedRepairStatuses.add(sstable);
+                        if (!nonAnticompacting.contains(sstable)) // don't notify if the SSTable was already repaired
+                            mutatedRepairStatuses.add(sstable);
                         sstableIterator.remove();
                         shouldAnticompact = true;
                         break;
