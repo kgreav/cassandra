@@ -262,7 +262,7 @@ public class AntiCompactionTest
     }
 
     @Test
-    public void shouldMutateRepairedAt() throws InterruptedException, IOException, ExecutionException
+    public void shouldMutateRepairedAt() throws InterruptedException, IOException
     {
         ColumnFamilyStore store = prepareColumnFamilyStore();
         Collection<SSTableReader> sstables = store.getUnrepairedSSTables();
