@@ -23,6 +23,7 @@ import com.google.common.base.Objects;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.dht.Datacenters;
+import org.apache.cassandra.utils.Pair;
 
 /**
  * Returned from IAuthenticator#authenticate(), represents an authenticated user everywhere internally.
@@ -37,10 +38,16 @@ public class AuthenticatedUser
 
     public static final String ANONYMOUS_USERNAME = "anonymous";
     public static final AuthenticatedUser ANONYMOUS_USER = new AuthenticatedUser(ANONYMOUS_USERNAME);
-
     // User-level permissions cache.
-    private static final PermissionsCache permissionsCache = new PermissionsCache(DatabaseDescriptor.getAuthorizer());
-    private static final NetworkAuthCache networkAuthCache = new NetworkAuthCache(DatabaseDescriptor.getNetworkAuthorizer());
+    private static final AuthCache<Pair<AuthenticatedUser, IResource>, Set<Permission>> permissionsCache = new AuthCache.Builder<Pair<AuthenticatedUser, IResource>, Set<Permission>>()
+                                                                                                           .withLoadFunction((p) -> DatabaseDescriptor.getAuthorizer().authorize(p.left, p.right))
+                                                                                                           .withCacheEnabled(() -> DatabaseDescriptor.getAuthorizer().requireAuthorization())
+                                                                                                           .build("PermissionsCache");
+
+    private static final AuthCache<RoleResource, DCPermissions> networkAuthCache = new AuthCache.Builder<RoleResource, DCPermissions>()
+                                                                                   .withLoadFunction(DatabaseDescriptor.getNetworkAuthorizer()::authorize)
+                                                                                   .withCacheEnabled(() -> DatabaseDescriptor.getAuthenticator().requireAuthentication())
+                                                                                   .build("NetworkAuthCache");
 
     private final String name;
     // primary Role of the logged in user
@@ -103,7 +110,7 @@ public class AuthenticatedUser
 
     public Set<Permission> getPermissions(IResource resource)
     {
-        return permissionsCache.getPermissions(this, resource);
+        return permissionsCache.get(Pair.create(this, resource));
     }
 
     public boolean hasLocalAccess()

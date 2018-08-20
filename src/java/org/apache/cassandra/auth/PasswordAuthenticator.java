@@ -67,7 +67,7 @@ public class PasswordAuthenticator implements IAuthenticator
     private static final byte NUL = 0;
     private SelectStatement authenticateStatement;
 
-    private CredentialsCache cache;
+    private AuthCache<String, String> cache;
 
     // No anonymous access.
     public boolean requireAuthentication()
@@ -137,7 +137,9 @@ public class PasswordAuthenticator implements IAuthenticator
                                      AuthKeyspace.ROLES);
         authenticateStatement = prepare(query);
 
-        cache = new CredentialsCache(this);
+        cache = new AuthCache.Builder<String, String>()
+                .withLoadFunction(this::queryHashedPassword)
+                .build("CredentialsCache");
     }
 
     public AuthenticatedUser legacyAuthenticate(Map<String, String> credentials) throws AuthenticationException
@@ -226,31 +228,5 @@ public class PasswordAuthenticator implements IAuthenticator
             username = new String(user, StandardCharsets.UTF_8);
             password = new String(pass, StandardCharsets.UTF_8);
         }
-    }
-
-    private static class CredentialsCache extends AuthCache<String, String> implements CredentialsCacheMBean
-    {
-        private CredentialsCache(PasswordAuthenticator authenticator)
-        {
-            super("CredentialsCache",
-                  DatabaseDescriptor::setCredentialsValidity,
-                  DatabaseDescriptor::getCredentialsValidity,
-                  DatabaseDescriptor::setCredentialsUpdateInterval,
-                  DatabaseDescriptor::getCredentialsUpdateInterval,
-                  DatabaseDescriptor::setCredentialsCacheMaxEntries,
-                  DatabaseDescriptor::getCredentialsCacheMaxEntries,
-                  authenticator::queryHashedPassword,
-                  () -> true);
-        }
-
-        public void invalidateCredentials(String roleName)
-        {
-            invalidate(roleName);
-        }
-    }
-
-    public static interface CredentialsCacheMBean extends AuthCacheMBean
-    {
-        public void invalidateCredentials(String roleName);
     }
 }

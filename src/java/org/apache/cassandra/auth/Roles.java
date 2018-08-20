@@ -23,7 +23,10 @@ import org.apache.cassandra.config.DatabaseDescriptor;
 
 public class Roles
 {
-    private static final RolesCache cache = new RolesCache(DatabaseDescriptor.getRoleManager());
+    private static final AuthCache<RoleResource, Set<RoleResource>> cache = new AuthCache.Builder<RoleResource, Set<RoleResource>>()
+                                                                            .withLoadFunction((r) -> DatabaseDescriptor.getRoleManager().getRoles(r, true))
+                                                                            .withCacheEnabled(() -> DatabaseDescriptor.getAuthenticator().requireAuthentication())
+                                                                            .build("RolesCache");
 
     /**
      * Get all roles granted to the supplied Role, including both directly granted
@@ -35,7 +38,7 @@ public class Roles
      */
     public static Set<RoleResource> getRoles(RoleResource primaryRole)
     {
-        return cache.getRoles(primaryRole);
+        return cache.get(primaryRole);
     }
 
     /**
@@ -48,7 +51,7 @@ public class Roles
     public static boolean hasSuperuserStatus(RoleResource role)
     {
         IRoleManager roleManager = DatabaseDescriptor.getRoleManager();
-        for (RoleResource r : cache.getRoles(role))
+        for (RoleResource r : cache.get(role))
             if (roleManager.isSuper(r))
                 return true;
         return false;

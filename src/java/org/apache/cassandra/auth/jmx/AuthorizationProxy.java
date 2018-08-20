@@ -104,7 +104,10 @@ public class AuthorizationProxy implements InvocationHandler
                                                                         "registerMBean",
                                                                         "unregisterMBean");
 
-    private static final JMXPermissionsCache permissionsCache = new JMXPermissionsCache();
+    private static final AuthCache<RoleResource, Set<PermissionDetails>> permissionsCache = new AuthCache.Builder<RoleResource, Set<PermissionDetails>>()
+                                                                                            .withLoadFunction(AuthorizationProxy::loadPermissions)
+                                                                                            .withCacheEnabled(() -> DatabaseDescriptor.getAuthorizer().requireAuthorization())
+                                                                                            .build("JMXPermissionsCache");
     private MBeanServer mbs;
 
     /*
@@ -475,26 +478,5 @@ public class AuthorizationProxy implements InvocationHandler
                                                  .stream()
                                                  .filter(details -> details.resource instanceof JMXResource)
                                                  .collect(Collectors.toSet());
-    }
-
-    private static final class JMXPermissionsCache extends AuthCache<RoleResource, Set<PermissionDetails>>
-    {
-        protected JMXPermissionsCache()
-        {
-            super("JMXPermissionsCache",
-                  DatabaseDescriptor::setPermissionsValidity,
-                  DatabaseDescriptor::getPermissionsValidity,
-                  DatabaseDescriptor::setPermissionsUpdateInterval,
-                  DatabaseDescriptor::getPermissionsUpdateInterval,
-                  DatabaseDescriptor::setPermissionsCacheMaxEntries,
-                  DatabaseDescriptor::getPermissionsCacheMaxEntries,
-                  AuthorizationProxy::loadPermissions,
-                  () -> true);
-        }
-
-        public Set<PermissionDetails> get(RoleResource roleResource)
-        {
-            return super.get(roleResource);
-        }
     }
 }

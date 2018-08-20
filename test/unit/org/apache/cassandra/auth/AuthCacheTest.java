@@ -1,0 +1,150 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+package org.apache.cassandra.auth;
+
+import org.junit.Assert;
+import org.junit.BeforeClass;
+import org.junit.Test;
+
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+import com.github.benmanes.caffeine.cache.CacheLoader;
+import org.apache.cassandra.config.DatabaseDescriptor;
+
+
+public class AuthCacheTest
+{
+
+    private static boolean loadFuncCalled = false;
+    private static boolean cacheLoadCalled = false;
+    private static CacheLoader<String, String> loader = new CacheLoader<String, String>()
+    {
+        @Override
+        public String load(String user) throws Exception {
+            cacheLoadCalled = true;
+            return "test";
+        }
+    };
+
+    @BeforeClass
+    public static void setup()
+    {
+        DatabaseDescriptor.daemonInitialization();
+    }
+
+    // Test that we don't allow cache to be disabled without at least specifying a load Function, as this would lead to NPE.
+    @Test(expected = RuntimeException.class)
+    public void testMissingLoader()
+    {
+        AuthCache<String, String> authCache = new AuthCache.Builder<String, String>()
+                                              .withCacheLoader(loader)
+                                              .withCacheEnabled(() -> false)
+                                              .build("TestCache");
+    }
+
+    public String load(String test)
+    {
+        loadFuncCalled = true;
+        return "load";
+    }
+
+    @Test
+    public void testCaching()
+    {
+        AuthCache<String, String> authCache = new AuthCache.Builder<String, String>()
+                                              .withCacheLoader(loader)
+                                              .withLoadFunction(this::load)
+                                              .build("TestCache2");
+        // Test cacheloader is called if set
+        loadFuncCalled = false;
+        cacheLoadCalled = false;
+        String result = authCache.get("test");
+        assertTrue(cacheLoadCalled);
+        assertFalse(loadFuncCalled);
+        Assert.assertEquals("test", result);
+
+        // value should be fetched from cache
+        loadFuncCalled = false;
+        cacheLoadCalled = false;
+        String result2 = authCache.get("test");
+        assertFalse(loadFuncCalled);
+        assertFalse(cacheLoadCalled);
+        Assert.assertEquals("test", result2);
+
+        // value should be fetched from cache after complete invalidate
+        authCache.invalidate();
+        loadFuncCalled = false;
+        cacheLoadCalled = false;
+        String result3 = authCache.get("test");
+        assertFalse(loadFuncCalled);
+        assertTrue(cacheLoadCalled);
+        Assert.assertEquals("test", result3);
+
+        // value should be fetched from cache after invalidating key
+        authCache.invalidate("test");
+        loadFuncCalled = false;
+        cacheLoadCalled = false;
+        String result4 = authCache.get("test");
+        assertFalse(loadFuncCalled);
+        assertTrue(cacheLoadCalled);
+        Assert.assertEquals("test", result4);
+
+        // set cache to null and load function should be called
+        loadFuncCalled = false;
+        cacheLoadCalled = false;
+        authCache.cache = null;
+        String result5 = authCache.get("test");
+        assertTrue(loadFuncCalled);
+        assertFalse(cacheLoadCalled);
+        Assert.assertEquals("load", result5);
+    }
+
+    public static boolean isCacheEnabled = false;
+
+    @Test
+    public void testInitCache()
+    {
+        // Test that a validity of <= 0 will turn off caching
+        DatabaseDescriptor.setCredentialsValidity(0);
+        AuthCache<String, String> authCache = new AuthCache.Builder<String, String>()
+                                              .withLoadFunction(this::load)
+                                              .build("TestCache3");
+
+
+        assertNull(authCache.cache);
+        authCache.setValidity(2000);
+        authCache.cache = authCache.initCache(null);
+        assertNotNull(authCache.cache);
+        // Test enableCache works as intended
+        authCache = new AuthCache.Builder<String, String>()
+                                              .withLoadFunction(this::load)
+                                              .withCacheEnabled(() -> isCacheEnabled)
+                                              .build("TestCache4");
+        assertNull(authCache.cache);
+        isCacheEnabled = true;
+        authCache.cache = authCache.initCache(null);
+        assertNotNull(authCache.cache);
+
+        // Ensure at a minimum these policies have been initialised by default
+        assertTrue(authCache.cache.policy().expireAfterWrite().isPresent());
+        assertTrue(authCache.cache.policy().refreshAfterWrite().isPresent());
+        assertTrue(authCache.cache.policy().eviction().isPresent());
+    }
+}
