@@ -2245,10 +2245,12 @@ public class StorageProxy implements StorageProxyMBean
             List<ReadRepair> readRepairs = new ArrayList<>(concurrencyFactor);
             for (int i = 0; i < concurrencyFactor && ranges.hasNext(); i++)
             {
-                SingleRangeResponse response = query(ranges.next(), i == 0);
-                concurrentQueries.add(response);
-                readRepairs.add(response.readRepair);
-                ++rangesQueried;
+                try (SingleRangeResponse response = query(ranges.next(), i == 0))
+                {
+                    concurrentQueries.add(response);
+                    readRepairs.add(response.readRepair);
+                    ++rangesQueried;
+                }
             }
 
             Tracing.trace("Submitted {} concurrent range requests", concurrentQueries.size());
