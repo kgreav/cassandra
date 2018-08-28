@@ -21,7 +21,7 @@ import java.util.Set;
 
 import org.apache.cassandra.config.DatabaseDescriptor;
 
-public class RolesCache extends AuthCache<RoleResource, Set<RoleResource>> implements RolesCacheMBean
+public class RolesCache extends AuthCache<RoleResource, Set<RoleResource>>
 {
     public RolesCache(IRoleManager roleManager)
     {

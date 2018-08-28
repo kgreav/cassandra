@@ -228,7 +228,7 @@ public class PasswordAuthenticator implements IAuthenticator
         }
     }
 
-    private static class CredentialsCache extends AuthCache<String, String> implements CredentialsCacheMBean
+    private static class CredentialsCache extends AuthCache<String, String>
     {
         private CredentialsCache(PasswordAuthenticator authenticator)
         {
@@ -242,15 +242,6 @@ public class PasswordAuthenticator implements IAuthenticator
                   authenticator::queryHashedPassword,
                   () -> true);
         }
-
-        public void invalidateCredentials(String roleName)
-        {
-            invalidate(roleName);
-        }
     }
 
-    public static interface CredentialsCacheMBean extends AuthCacheMBean
-    {
-        public void invalidateCredentials(String roleName);
-    }
 }
