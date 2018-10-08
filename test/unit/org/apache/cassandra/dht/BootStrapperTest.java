@@ -21,14 +21,27 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.fail;
 
+import java.io.BufferedOutputStream;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
 import java.net.UnknownHostException;
+import java.text.DecimalFormat;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.SortedMap;
 import java.util.UUID;
 
 import com.google.common.base.Predicate;
 import com.google.common.base.Predicates;
+import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.Lists;
+import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
 
 import org.apache.cassandra.dht.RangeStreamer.FetchReplica;
@@ -39,11 +52,17 @@ import org.junit.BeforeClass;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.cassandra.OrderedJUnit4ClassRunner;
 import org.apache.cassandra.SchemaLoader;
 import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.locator.EndpointSnitchInfoMBean;
 import org.apache.cassandra.locator.InetAddressAndPort;
 import org.apache.cassandra.locator.Replica;
+import org.apache.cassandra.schema.KeyspaceMetadata;
+import org.apache.cassandra.schema.MigrationManager;
 import org.apache.cassandra.schema.Schema;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.dht.tokenallocator.TokenAllocation;
@@ -56,12 +75,17 @@ import org.apache.cassandra.locator.TokenMetadata;
 import org.apache.cassandra.schema.KeyspaceParams;
 import org.apache.cassandra.service.StorageService;
 import org.apache.cassandra.streaming.StreamOperation;
+import org.apache.cassandra.tools.NodeProbe;
+import org.apache.cassandra.tools.NodeTool;
+import org.apache.cassandra.tools.nodetool.HostStatWithPort;
+import org.apache.cassandra.tools.nodetool.SetHostStatWithPort;
 import org.apache.cassandra.utils.FBUtilities;
 
 @RunWith(OrderedJUnit4ClassRunner.class)
 public class BootStrapperTest
 {
     static IPartitioner oldPartitioner;
+    private static final org.slf4j.Logger logger = LoggerFactory.getLogger(BootStrapperTest.class);
 
     static Predicate<Replica> originalAlivePredicate = RangeStreamer.ALIVE_PREDICATE;
     @BeforeClass
@@ -279,4 +303,181 @@ public class BootStrapperTest
         verifyImprovement(os3, ns3);
         verifyImprovement(os2, ns2);
     }
+
+
+    @Test
+    public void testBasic() throws UnknownHostException, FileNotFoundException
+    {
+
+        for (double i = 1; i < 7; ++i)
+        {
+            // 1 rack, RF = 3
+            testNTS(1, 3, (int) Math.pow(2, i), 4, 3, 1);
+            testNTS(1, 3, (int) Math.pow(2, i), 8, 3, 1);
+            testNTS(1, 3, (int) Math.pow(2, i), 16, 3, 1);
+            testNTS(1, 3, (int) Math.pow(2, i), 32, 3, 1);
+            testNTS(1, 3, (int) Math.pow(2, i), 64, 3, 1);
+
+            // racks == RF == 3
+            testNTS(3, 3, (int) Math.pow(2, i), 4, 3, 1);
+            testNTS(3, 3, (int) Math.pow(2, i), 8, 3, 1);
+            testNTS(3, 3, (int) Math.pow(2, i), 16, 3, 1);
+            testNTS(3, 3, (int) Math.pow(2, i), 32, 3, 1);
+            testNTS(3, 3, (int) Math.pow(2, i), 64, 3, 1);
+
+            // racks = 5, RF = 3
+            testNTS(5, 3, (int) Math.pow(2, i), 4, 3, 1);
+            testNTS(5, 3, (int) Math.pow(2, i), 8, 3, 1);
+            testNTS(5, 3, (int) Math.pow(2, i), 16, 3, 1);
+            testNTS(5, 3, (int) Math.pow(2, i), 32, 3, 1);
+            testNTS(5, 3, (int) Math.pow(2, i), 64, 3, 1);
+
+            // RF = 5, racks = 1
+            testNTS(1, 5, (int) Math.pow(2, i), 4, 3, 1);
+            testNTS(1, 5, (int) Math.pow(2, i), 8, 3, 1);
+            testNTS(1, 5, (int) Math.pow(2, i), 16, 3, 1);
+            testNTS(1, 5, (int) Math.pow(2, i), 32, 3, 1);
+            testNTS(1, 5, (int) Math.pow(2, i), 64, 3, 1);
+
+            // RF = 5, racks = 3
+            testNTS(5, 5, (int) Math.pow(2, i), 4, 5, 1);
+            testNTS(5, 5, (int) Math.pow(2, i), 8, 5, 1);
+            testNTS(5, 5, (int) Math.pow(2, i), 16, 5, 1);
+            testNTS(5, 5, (int) Math.pow(2, i), 32, 5, 1);
+            testNTS(5, 5, (int) Math.pow(2, i), 64, 5, 1);
+
+        }
+
+        for (double i = 1; i < 6; i++)
+        {
+            // 1 rack, RF 3 in 2 DC's
+            testNTS(1, 3, (int) Math.pow(2, i), 4, 3, 2);
+            testNTS(1, 3, (int) Math.pow(2, i), 8, 3, 2);
+            testNTS(1, 3, (int) Math.pow(2, i), 16, 3, 2);
+            testNTS(1, 3, (int) Math.pow(2, i), 32, 3, 2);
+            testNTS(1, 3, (int) Math.pow(2, i), 64, 3, 2);
+        }
+
+    }
+
+    public void testNTS(int rackCount, int replicas, int nodesPerRack, int vNodes, int seedCount, float secondDC) throws UnknownHostException, FileNotFoundException
+    {
+        IEndpointSnitch oldSnitch = DatabaseDescriptor.getEndpointSnitch();
+        try
+        {
+            DatabaseDescriptor.setEndpointSnitch(new RackInferringSnitch());
+            String ks = "BootStrapperTestNTSKeyspace" + rackCount + "_" + replicas + "_" + nodesPerRack + "_" + vNodes + "_" + (int) Math.ceil(secondDC) ;
+            String dc = "1";
+
+            // Register peers with expected DC for NetworkTopologyStrategy.
+            TokenMetadata metadata = StorageService.instance.getTokenMetadata();
+            metadata.clearUnsafe();
+            metadata.updateHostId(UUID.randomUUID(), InetAddressAndPort.getByName("127.1.0.99"));
+
+            KeyspaceParams kp = KeyspaceParams.nts(dc, replicas);
+
+            SchemaLoader.createKeyspace(ks, kp, SchemaLoader.standardCFMD(ks, "Standard1"));
+            TokenMetadata tm = StorageService.instance.getTokenMetadata();
+            tm.clearUnsafe();
+            // Create seed nodes. 1 per rack, max of #racks
+            for (int i = 0; i < seedCount && i < rackCount; ++i)
+            {
+                generateFakeEndpoints(tm, 1, vNodes, dc, Integer.toString(i));
+            }
+            String numDC = secondDC > 1.0 ? "multiDC" : "singleDC";
+            try (PrintWriter out = new PrintWriter(new OutputStreamWriter(new BufferedOutputStream(new FileOutputStream("/home/kurt/vnode_testing/" + rackCount + "racks_" + replicas + "rf_" + rackCount*nodesPerRack + "nodes_" + vNodes + "vNodes_" + (seedCount % rackCount + 1) + "seeds_" + numDC)))))
+            {
+                InetAddressAndPort addr = InetAddressAndPort.getByName("127." + dc + ".0.99");
+                SummaryStatistics os = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
+                out.write(String.format("%s, %s, %s\n", os.getN(), os.getVariance(), os.getStandardDeviation()));
+                int totalNodes = 1;
+                for (int j = 0; j < rackCount; ++j)
+                {
+                    if (totalNodes > (nodesPerRack * rackCount + seedCount) / secondDC)
+                        dc = "2";
+                    // Skip i = 0 to reserve for possible seeds
+                    for (int i = 3; i < nodesPerRack + 3; ++i)
+                    {
+                        totalNodes++;
+                        if (rackCount == 1 && totalNodes > (nodesPerRack + seedCount) / secondDC)
+                        {
+                            dc = "2";
+                            addr = InetAddressAndPort.getByName("127." + dc + "." + j + "." + i);
+                            allocateTokens(vNodes, ks, tm, addr, out);
+
+                            kp = KeyspaceParams.nts("1", replicas, "2", replicas);
+                            MigrationManager.announceKeyspaceUpdate(KeyspaceMetadata.create(ks, kp));
+                            continue;
+                        }
+                        addr = InetAddressAndPort.getByName("127." + dc + "." + j + "." + i);
+                        try
+                        {
+                            allocateTokens(vNodes, ks, tm, addr, out);
+                        } catch (ConfigurationException e)
+                        {
+                            logger.error("SHITS BROKEN");
+                            allocateTokens(vNodes, ks, tm, addr, out);
+                        }
+                    }
+                }
+                LinkedHashMap<String, Float> ownerships = StorageService.instance.effectiveOwnershipWithPort(ks);
+                SortedMap<String, SetHostStatWithPort> dcs = getOwnershipByDcWithPort(false, StorageService.instance.getTokenToEndpointWithPortMap(), ownerships);
+
+                // PRint out the shit Datacenters
+                for (Map.Entry<String, SetHostStatWithPort> datac : dcs.entrySet())
+                {
+                    String dcHeader = String.format("Datacenter: %s%n", datac.getKey());
+                    out.write(dcHeader);
+
+
+                    ArrayListMultimap<InetAddressAndPort, HostStatWithPort> hostToTokens = ArrayListMultimap.create();
+                    for (HostStatWithPort stat : datac.getValue())
+                        hostToTokens.put(stat.endpoint, stat);
+
+                    for (InetAddressAndPort endpoint : hostToTokens.keySet())
+                    {
+                        Float owns = ownerships.get(endpoint.toString());
+                        out.println(new DecimalFormat("##0.0%").format(owns));
+                    }
+                }
+            }
+            // Note: Not matching replication factor in second datacentre, but this should not affect us.
+        } finally {
+            DatabaseDescriptor.setEndpointSnitch(oldSnitch);
+        }
+    }
+
+    private void allocateTokens(int vn, String ks, TokenMetadata tm, InetAddressAndPort addr, PrintWriter s)
+    {
+        Collection<Token> tokens = BootStrapper.allocateTokens(tm, addr, ks, vn, 0);
+        assertEquals(vn, tokens.size());
+        tm.updateNormalTokens(tokens, addr);
+        SummaryStatistics ns = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
+        ns.getVariance();
+        ns.getStandardDeviation();
+        s.write(String.format("%s, %s, %s\n", ns.getN(), ns.getVariance(), ns.getStandardDeviation()));
+    }
+
+    private SortedMap<String, SetHostStatWithPort> getOwnershipByDcWithPort(boolean resolveIp,
+                                                                      Map<String, String> tokenToEndpoint,
+                                                                      Map<String, Float> ownerships)
+    {
+        SortedMap<String, SetHostStatWithPort> ownershipByDc = Maps.newTreeMap();
+        try
+        {
+            for (Map.Entry<String, String> tokenAndEndPoint : tokenToEndpoint.entrySet())
+            {
+                String dc = DatabaseDescriptor.getEndpointSnitch().getDatacenter(InetAddressAndPort.getByName(tokenAndEndPoint.getValue()));
+                if (!ownershipByDc.containsKey(dc))
+                    ownershipByDc.put(dc, new SetHostStatWithPort(resolveIp));
+                ownershipByDc.get(dc).add(tokenAndEndPoint.getKey(), tokenAndEndPoint.getValue(), ownerships);
+            }
+        }
+        catch (UnknownHostException e)
+        {
+            throw new RuntimeException(e);
+        }
+        return ownershipByDc;
+    }
+
 }

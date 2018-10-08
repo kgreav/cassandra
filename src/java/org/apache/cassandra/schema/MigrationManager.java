@@ -238,9 +238,9 @@ public class MigrationManager
         announce(SchemaKeyspace.makeCreateTableMutation(ksm, cfm, timestamp), false);
     }
 
-    static void announceKeyspaceUpdate(KeyspaceMetadata ksm)
+    public static void announceKeyspaceUpdate(KeyspaceMetadata ksm)
     {
-        ksm.validate();
+//        ksm.validate();
 
         KeyspaceMetadata oldKsm = Schema.instance.getKeyspaceMetadata(ksm.name);
         if (oldKsm == null)
