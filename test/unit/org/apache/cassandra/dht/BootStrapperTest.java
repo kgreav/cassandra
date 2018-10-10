@@ -311,35 +311,35 @@ public class BootStrapperTest
 
         for (double i = 1; i < 7; ++i)
         {
-            // 1 rack, RF = 3
-            testNTS(1, 3, (int) Math.pow(2, i), 4, 3, 1);
-            testNTS(1, 3, (int) Math.pow(2, i), 8, 3, 1);
-            testNTS(1, 3, (int) Math.pow(2, i), 16, 3, 1);
-            testNTS(1, 3, (int) Math.pow(2, i), 32, 3, 1);
-            testNTS(1, 3, (int) Math.pow(2, i), 64, 3, 1);
-
-            // racks == RF == 3
-            testNTS(3, 3, (int) Math.pow(2, i), 4, 3, 1);
-            testNTS(3, 3, (int) Math.pow(2, i), 8, 3, 1);
-            testNTS(3, 3, (int) Math.pow(2, i), 16, 3, 1);
+//            // 1 rack, RF = 3
+//            testNTS(1, 3, (int) Math.pow(2, i), 4, 3, 1);
+//            testNTS(1, 3, (int) Math.pow(2, i), 8, 3, 1);
+//            testNTS(1, 3, (int) Math.pow(2, i), 16, 3, 1);
+//            testNTS(1, 3, (int) Math.pow(2, i), 32, 3, 1);
+//            testNTS(1, 3, (int) Math.pow(2, i), 64, 3, 1);
+//
+//            // racks == RF == 3
+//            testNTS(3, 3, (int) Math.pow(2, i), 4, 3, 1);
+//            testNTS(3, 3, (int) Math.pow(2, i), 8, 3, 1);
+//            testNTS(3, 3, (int) Math.pow(2, i), 16, 3, 1);
             testNTS(3, 3, (int) Math.pow(2, i), 32, 3, 1);
             testNTS(3, 3, (int) Math.pow(2, i), 64, 3, 1);
 
             // racks = 5, RF = 3
-            testNTS(5, 3, (int) Math.pow(2, i), 4, 3, 1);
-            testNTS(5, 3, (int) Math.pow(2, i), 8, 3, 1);
+//            testNTS(5, 3, (int) Math.pow(2, i), 4, 3, 1);
+//            testNTS(5, 3, (int) Math.pow(2, i), 8, 3, 1);
             testNTS(5, 3, (int) Math.pow(2, i), 16, 3, 1);
             testNTS(5, 3, (int) Math.pow(2, i), 32, 3, 1);
             testNTS(5, 3, (int) Math.pow(2, i), 64, 3, 1);
 
-            // RF = 5, racks = 1
-            testNTS(1, 5, (int) Math.pow(2, i), 4, 3, 1);
-            testNTS(1, 5, (int) Math.pow(2, i), 8, 3, 1);
-            testNTS(1, 5, (int) Math.pow(2, i), 16, 3, 1);
-            testNTS(1, 5, (int) Math.pow(2, i), 32, 3, 1);
-            testNTS(1, 5, (int) Math.pow(2, i), 64, 3, 1);
+//            // RF = 5, racks = 1
+//            testNTS(1, 5, (int) Math.pow(2, i), 4, 3, 1);
+//            testNTS(1, 5, (int) Math.pow(2, i), 8, 3, 1);
+//            testNTS(1, 5, (int) Math.pow(2, i), 16, 3, 1);
+//            testNTS(1, 5, (int) Math.pow(2, i), 32, 3, 1);
+//            testNTS(1, 5, (int) Math.pow(2, i), 64, 3, 1);
 
-            // RF = 5, racks = 3
+            // RF = 5, racks = 5
             testNTS(5, 5, (int) Math.pow(2, i), 4, 5, 1);
             testNTS(5, 5, (int) Math.pow(2, i), 8, 5, 1);
             testNTS(5, 5, (int) Math.pow(2, i), 16, 5, 1);
@@ -415,7 +415,7 @@ public class BootStrapperTest
                             allocateTokens(vNodes, ks, tm, addr, out);
                         } catch (ConfigurationException e)
                         {
-                            logger.error("SHITS BROKEN");
+                            logger.error("SHITS BROKEN", e);
                             allocateTokens(vNodes, ks, tm, addr, out);
                         }
                     }

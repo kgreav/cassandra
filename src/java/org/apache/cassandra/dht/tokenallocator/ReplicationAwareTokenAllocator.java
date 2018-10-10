@@ -17,12 +17,19 @@
  */
 package org.apache.cassandra.dht.tokenallocator;
 
+import java.io.BufferedOutputStream;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
 import java.util.*;
 
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Multimap;
+
+import org.slf4j.LoggerFactory;
 
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.Token;
@@ -40,6 +47,7 @@ class ReplicationAwareTokenAllocator<Unit> extends TokenAllocatorBase<Unit>
 {
     final Multimap<Unit, Token> unitToTokens;
     final int replicas;
+    private static final org.slf4j.Logger logger = LoggerFactory.getLogger(ReplicationAwareTokenAllocator.class);
 
     ReplicationAwareTokenAllocator(NavigableMap<Token, Unit> sortedTokens, ReplicationStrategy<Unit> strategy, IPartitioner partitioner)
     {
@@ -200,6 +208,8 @@ class ReplicationAwareTokenAllocator<Unit> extends TokenAllocatorBase<Unit>
             curr = curr.next;
         } while (curr != tokens);
         prev.next = first;
+        first.printCandidateInfo();
+
         return first;
     }
 
@@ -560,6 +570,24 @@ class ReplicationAwareTokenAllocator<Unit> extends TokenAllocatorBase<Unit>
         TokenInfo<Unit> prevInRing()
         {
             return split.prev;
+        }
+
+        public void printCandidateInfo()
+        {
+            try (PrintWriter out = new PrintWriter(new OutputStreamWriter(new BufferedOutputStream(new FileOutputStream("/home/kurt/vnode_testing/candidates.txt")))))
+            {
+
+                CandidateInfo<Unit> temp = this;
+                int i = 1;
+                do
+                {
+                    out.write(String.format("Token: %s, Split: %s, Node: %s, RepOwnership: %s, RepStartToken: %s, RepThresh: %s\n", temp.token, temp.split, temp.owningUnit, temp.replicatedOwnership, temp.replicationStart, temp.replicationThreshold));
+                    ++i;
+                    temp = temp.next;
+                } while (temp != this);
+                out.write(String.format("Total: %s", i));
+            }
+            catch (FileNotFoundException e) {}
         }
     }
 

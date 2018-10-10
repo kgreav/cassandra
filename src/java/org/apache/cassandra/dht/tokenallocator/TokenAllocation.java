@@ -58,12 +58,12 @@ public class TokenAllocation
 
         if (logger.isWarnEnabled())
         {
-            logger.warn("Selected tokens {}", tokens);
+            logger.info("Selected tokens {}", tokens);
             SummaryStatistics os = replicatedOwnershipStats(tokenMetadataCopy, rs, endpoint);
             tokenMetadataCopy.updateNormalTokens(tokens, endpoint);
             SummaryStatistics ns = replicatedOwnershipStats(tokenMetadataCopy, rs, endpoint);
-            logger.warn("Replicated node load in datacenter before allocation {}", statToString(os));
-            logger.warn("Replicated node load in datacenter after allocation {}", statToString(ns));
+            logger.info("Replicated node load in datacenter before allocation {}", statToString(os));
+            logger.info("Replicated node load in datacenter after allocation {}", statToString(ns));
 
             // TODO: Is it worth doing the replicated ownership calculation always to be able to raise this alarm?
             if (ns.getStandardDeviation() > os.getStandardDeviation())
@@ -197,6 +197,7 @@ public class TokenAllocation
     {
         final String dc = snitch.getDatacenter(endpoint);
         final int replicas = rs.getReplicationFactor(dc).allReplicas;
+        final String rack = snitch.getRack(endpoint);
 
         if (replicas == 0 || replicas == 1)
         {
@@ -245,7 +246,7 @@ public class TokenAllocation
                 @Override
                 public boolean inAllocationRing(InetAddressAndPort other)
                 {
-                    return dc.equals(snitch.getDatacenter(other));
+                    return dc.equals(snitch.getDatacenter(other)); // && snitch.getRack(other).equals(rack);
                 }
             };
         }
