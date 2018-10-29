@@ -208,8 +208,7 @@ class ReplicationAwareTokenAllocator<Unit> extends TokenAllocatorBase<Unit>
             curr = curr.next;
         } while (curr != tokens);
         prev.next = first;
-        first.printCandidateInfo();
-
+//        first.printCandidateInfo();
         return first;
     }
 

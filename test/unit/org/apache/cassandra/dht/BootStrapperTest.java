@@ -311,33 +311,33 @@ public class BootStrapperTest
 
         for (double i = 1; i < 7; ++i)
         {
-//            // 1 rack, RF = 3
-//            testNTS(1, 3, (int) Math.pow(2, i), 4, 3, 1);
-//            testNTS(1, 3, (int) Math.pow(2, i), 8, 3, 1);
-//            testNTS(1, 3, (int) Math.pow(2, i), 16, 3, 1);
-//            testNTS(1, 3, (int) Math.pow(2, i), 32, 3, 1);
-//            testNTS(1, 3, (int) Math.pow(2, i), 64, 3, 1);
-//
-//            // racks == RF == 3
-//            testNTS(3, 3, (int) Math.pow(2, i), 4, 3, 1);
-//            testNTS(3, 3, (int) Math.pow(2, i), 8, 3, 1);
-//            testNTS(3, 3, (int) Math.pow(2, i), 16, 3, 1);
+            // 1 rack, RF = 3
+            testNTS(1, 3, (int) Math.pow(2, i), 4, 3, 1);
+            testNTS(1, 3, (int) Math.pow(2, i), 8, 3, 1);
+            testNTS(1, 3, (int) Math.pow(2, i), 16, 3, 1);
+            testNTS(1, 3, (int) Math.pow(2, i), 32, 3, 1);
+            testNTS(1, 3, (int) Math.pow(2, i), 64, 3, 1);
+
+            // racks == RF == 3
+            testNTS(3, 3, (int) Math.pow(2, i), 4, 3, 1);
+            testNTS(3, 3, (int) Math.pow(2, i), 8, 3, 1);
+            testNTS(3, 3, (int) Math.pow(2, i), 16, 3, 1);
             testNTS(3, 3, (int) Math.pow(2, i), 32, 3, 1);
             testNTS(3, 3, (int) Math.pow(2, i), 64, 3, 1);
 
             // racks = 5, RF = 3
-//            testNTS(5, 3, (int) Math.pow(2, i), 4, 3, 1);
-//            testNTS(5, 3, (int) Math.pow(2, i), 8, 3, 1);
+            testNTS(5, 3, (int) Math.pow(2, i), 4, 3, 1);
+            testNTS(5, 3, (int) Math.pow(2, i), 8, 3, 1);
             testNTS(5, 3, (int) Math.pow(2, i), 16, 3, 1);
             testNTS(5, 3, (int) Math.pow(2, i), 32, 3, 1);
             testNTS(5, 3, (int) Math.pow(2, i), 64, 3, 1);
 
-//            // RF = 5, racks = 1
-//            testNTS(1, 5, (int) Math.pow(2, i), 4, 3, 1);
-//            testNTS(1, 5, (int) Math.pow(2, i), 8, 3, 1);
-//            testNTS(1, 5, (int) Math.pow(2, i), 16, 3, 1);
-//            testNTS(1, 5, (int) Math.pow(2, i), 32, 3, 1);
-//            testNTS(1, 5, (int) Math.pow(2, i), 64, 3, 1);
+            // RF = 5, racks = 1
+            testNTS(1, 5, (int) Math.pow(2, i), 4, 3, 1);
+            testNTS(1, 5, (int) Math.pow(2, i), 8, 3, 1);
+            testNTS(1, 5, (int) Math.pow(2, i), 16, 3, 1);
+            testNTS(1, 5, (int) Math.pow(2, i), 32, 3, 1);
+            testNTS(1, 5, (int) Math.pow(2, i), 64, 3, 1);
 
             // RF = 5, racks = 5
             testNTS(5, 5, (int) Math.pow(2, i), 4, 5, 1);
@@ -385,18 +385,19 @@ public class BootStrapperTest
                 generateFakeEndpoints(tm, 1, vNodes, dc, Integer.toString(i));
             }
             String numDC = secondDC > 1.0 ? "multiDC" : "singleDC";
-            try (PrintWriter out = new PrintWriter(new OutputStreamWriter(new BufferedOutputStream(new FileOutputStream("/home/kurt/vnode_testing/" + rackCount + "racks_" + replicas + "rf_" + rackCount*nodesPerRack + "nodes_" + vNodes + "vNodes_" + (seedCount % rackCount + 1) + "seeds_" + numDC)))))
+            try (PrintWriter out = new PrintWriter(new OutputStreamWriter(new BufferedOutputStream(new FileOutputStream("/home/kurt/vnode_testing_csv/" + rackCount + "racks_" + replicas + "rf_" + rackCount*nodesPerRack + "nodes_" + vNodes + "vNodes_" + (seedCount % rackCount + 1) + "seeds_" + numDC))));
+                 PrintWriter out2 = new PrintWriter(new OutputStreamWriter(new BufferedOutputStream(new FileOutputStream("/home/kurt/vnode_testing/" + rackCount + "racks_" + replicas + "rf_" + rackCount*nodesPerRack + "nodes_" + vNodes + "vNodes_" + (seedCount % rackCount + 1) + "seeds_" + numDC)))))
             {
                 InetAddressAndPort addr = InetAddressAndPort.getByName("127." + dc + ".0.99");
                 SummaryStatistics os = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
                 out.write(String.format("%s, %s, %s\n", os.getN(), os.getVariance(), os.getStandardDeviation()));
                 int totalNodes = 1;
-                for (int j = 0; j < rackCount; ++j)
+                for (int i = 3; i < nodesPerRack + 3; ++i)
                 {
                     if (totalNodes > (nodesPerRack * rackCount + seedCount) / secondDC)
                         dc = "2";
                     // Skip i = 0 to reserve for possible seeds
-                    for (int i = 3; i < nodesPerRack + 3; ++i)
+                    for (int j = 0; j < rackCount; ++j)
                     {
                         totalNodes++;
                         if (rackCount == 1 && totalNodes > (nodesPerRack + seedCount) / secondDC)
@@ -410,36 +411,34 @@ public class BootStrapperTest
                             continue;
                         }
                         addr = InetAddressAndPort.getByName("127." + dc + "." + j + "." + i);
-                        try
+                        String s = allocateTokens(vNodes, ks, tm, addr, out);
+                        out.print(s);
+
+                        out2.println(s);
+                        LinkedHashMap<String, Float> ownerships = StorageService.instance.effectiveOwnershipWithPort(ks);
+                        SortedMap<String, SetHostStatWithPort> dcs = getOwnershipByDcWithPort(false, StorageService.instance.getTokenToEndpointWithPortMap(), ownerships);
+
+                        // PRint out the shit Datacenters
+                        for (Map.Entry<String, SetHostStatWithPort> datac : dcs.entrySet())
                         {
-                            allocateTokens(vNodes, ks, tm, addr, out);
-                        } catch (ConfigurationException e)
-                        {
-                            logger.error("SHITS BROKEN", e);
-                            allocateTokens(vNodes, ks, tm, addr, out);
+                            String dcHeader = String.format("Datacenter: %s%n", datac.getKey());
+                            out2.write(dcHeader);
+
+                            ArrayListMultimap<InetAddressAndPort, HostStatWithPort> hostToTokens = ArrayListMultimap.create();
+                            for (HostStatWithPort stat : datac.getValue())
+                                hostToTokens.put(stat.endpoint, stat);
+
+                            for (InetAddressAndPort endpoint : hostToTokens.keySet())
+                            {
+                                Float owns = ownerships.get(endpoint.toString());
+                                out2.println(new DecimalFormat("##0.0%").format(owns));
+                            }
                         }
+                        out2.println();
                     }
                 }
-                LinkedHashMap<String, Float> ownerships = StorageService.instance.effectiveOwnershipWithPort(ks);
-                SortedMap<String, SetHostStatWithPort> dcs = getOwnershipByDcWithPort(false, StorageService.instance.getTokenToEndpointWithPortMap(), ownerships);
-
-                // PRint out the shit Datacenters
-                for (Map.Entry<String, SetHostStatWithPort> datac : dcs.entrySet())
-                {
-                    String dcHeader = String.format("Datacenter: %s%n", datac.getKey());
-                    out.write(dcHeader);
 
 
-                    ArrayListMultimap<InetAddressAndPort, HostStatWithPort> hostToTokens = ArrayListMultimap.create();
-                    for (HostStatWithPort stat : datac.getValue())
-                        hostToTokens.put(stat.endpoint, stat);
-
-                    for (InetAddressAndPort endpoint : hostToTokens.keySet())
-                    {
-                        Float owns = ownerships.get(endpoint.toString());
-                        out.println(new DecimalFormat("##0.0%").format(owns));
-                    }
-                }
             }
             // Note: Not matching replication factor in second datacentre, but this should not affect us.
         } finally {
@@ -447,7 +446,7 @@ public class BootStrapperTest
         }
     }
 
-    private void allocateTokens(int vn, String ks, TokenMetadata tm, InetAddressAndPort addr, PrintWriter s)
+    private String allocateTokens(int vn, String ks, TokenMetadata tm, InetAddressAndPort addr, PrintWriter s)
     {
         Collection<Token> tokens = BootStrapper.allocateTokens(tm, addr, ks, vn, 0);
         assertEquals(vn, tokens.size());
@@ -455,7 +454,7 @@ public class BootStrapperTest
         SummaryStatistics ns = TokenAllocation.replicatedOwnershipStats(tm.cloneOnlyTokenMap(), Keyspace.open(ks).getReplicationStrategy(), addr);
         ns.getVariance();
         ns.getStandardDeviation();
-        s.write(String.format("%s, %s, %s\n", ns.getN(), ns.getVariance(), ns.getStandardDeviation()));
+        return String.format("%s, %s, %s\n", ns.getN(), ns.getVariance(), ns.getStandardDeviation());
     }
 
     private SortedMap<String, SetHostStatWithPort> getOwnershipByDcWithPort(boolean resolveIp,
